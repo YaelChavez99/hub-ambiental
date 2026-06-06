@@ -160,7 +160,7 @@ def analizar_fotografia(client: anthropic.Anthropic, image_bytes: bytes, media_t
     """
     b64 = image_to_b64(image_bytes)
     message = client.messages.create(
-        model="claude-3-5-sonnet-20240620",
+        model="claude-sonnet-4-6",
         max_tokens=512,
         system=SYSTEM_PROMPT_VISION,
         messages=[
@@ -378,7 +378,7 @@ def auditar_informe(client: anthropic.Anthropic, texto_pdf: str) -> dict:
     texto_truncado = texto_pdf[:180_000]
 
     message = client.messages.create(
-        model="claude-3-5-sonnet-20240620",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT_AUDITOR,
         messages=[
@@ -635,7 +635,7 @@ def parsear_resultados_lab(client: anthropic.Anthropic, paginas_jpeg: list[bytes
         contenido = _construir_contenido_vision(lote, num_lote, total_lotes)
 
         message = client.messages.create(
-            model="claude-3-5-sonnet-20240620",
+            model="claude-sonnet-4-6",
             max_tokens=8192,
             system=SYSTEM_PROMPT_LAB,
             messages=[{"role": "user", "content": contenido}],
@@ -766,7 +766,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             )
             contenido = _construir_contenido_vision(lote, num_lote, lotes_totales)
             message = client.messages.create(
-                model="claude-3-5-sonnet-20240620",
+                model="claude-sonnet-4-6",
                 max_tokens=8192,
                 system=SYSTEM_PROMPT_LAB,
                 messages=[{"role": "user", "content": contenido}],
@@ -946,7 +946,7 @@ def generar_capitulo_5(
     )
 
     message = client.messages.create(
-        model="claude-3-5-sonnet-20240620",
+        model="claude-sonnet-4-6",
         max_tokens=8192,
         system=SYSTEM_PROMPT_CAP5,
         messages=[{"role": "user", "content": prompt_usuario}],
