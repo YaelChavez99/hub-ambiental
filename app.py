@@ -862,7 +862,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 4 – Generador del Capítulo 5 (CON INVESTIGADOR AUTÓNOMO)
+# HERRAMIENTA 4 – Generador del Capítulo 5 (CON NOTAS DE CAMPO)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_CAP5 = """
@@ -872,15 +872,14 @@ para la Agencia de Seguridad, Energía y Ambiente (ASEA) y la SEMARNAT en Méxic
 Tu escritura es precisa, formal y técnica, estructurada como los informes de caracterización
 de sitios contaminados. 
 
-Se te proporcionará: Municipio, Estado, Coordenadas y un [CONTEXTO INVESTIGADO DE INTERNET].
-REGLA DE ORO: El [CONTEXTO INVESTIGADO DE INTERNET] contiene los apuntes de una búsqueda web 
-realizada en tiempo real sobre el acuífero local, edafología, clima y localidades cercanas. 
-DEBES extraer la "verdad" de ahí y usar esos datos exactos (nombres de acuíferos, distancias, 
-tipos de suelo, poblados) para redactar tu informe. NO inventes ni uses datos genéricos si la 
-información específica está presente en el contexto web.
+Se te proporcionará: Municipio, Estado, Coordenadas y "NOTAS DE CAMPO".
+REGLA DE ORO: Las "Notas de Campo" son la VERDAD ABSOLUTA. Si las notas mencionan un acuífero, 
+un poblado, una distancia, vegetación o un tipo de suelo específico, DEBES usar exactamente 
+esos datos y construir tu redacción técnica alrededor de ellos. Nunca contradigas las notas 
+de campo con datos genéricos o promedios regionales.
 
 Redacta el **Capítulo 5 – Características Generales del Sitio Contaminado** con los siguientes sub-apartados.
-Para cada sub-apartado, escribe entre 3 y 6 párrafos técnicos.
+Para cada sub-apartado, escribe entre 3 y 6 párrafos técnicos integrando las notas de campo.
 
 **ESTRUCTURA OBLIGATORIA:**
 
@@ -893,10 +892,10 @@ Para cada sub-apartado, escribe entre 3 y 6 párrafos técnicos.
 [Tipo de relieve, tipo de roca, características del piedemonte o terreno]
 
 ### 5.3 Hidrografía e Hidrología
-[Cuenca hidrológica, subcuenca, cuerpos de agua superficiales, acuífero local según contexto]
+[Cuenca hidrológica, subcuenca, cuerpos de agua superficiales, acuífero local]
 
 ### 5.4 Clima
-[Tipo de clima Köppen, temperatura, precipitación según contexto]
+[Tipo de clima Köppen, temperatura, precipitación]
 
 ### 5.5 Flora
 [Tipos de vegetación predominante, vegetación secundaria afectada]
@@ -908,10 +907,10 @@ Para cada sub-apartado, escribe entre 3 y 6 párrafos técnicos.
 [Uso actual, clasificación según NOM-138-SEMARNAT/SSA1-2012]
 
 ### 5.8 Edafología
-[Tipo edafológico local, características físicas: textura, permeabilidad según contexto]
+[Tipo edafológico local, características físicas: textura, permeabilidad]
 
 ### 5.9 Población
-[Poblados más cercanos al sitio exacto y su distancia según contexto]
+[Poblados más cercanos al sitio exacto y su distancia]
 
 ### 5.10 Economía
 [Actividades económicas principales de la zona]
@@ -923,35 +922,6 @@ REGLAS ESTRICTAS:
 - Extensión total esperada: entre 1,500 y 3,000 palabras.
 """
 
-def investigar_en_internet(municipio: str, estado: str, coordenadas: str) -> str:
-    """Realiza búsquedas automatizadas en internet para obtener contexto real del sitio."""
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        return "ERROR INTERNO: La librería 'duckduckgo-search' no está instalada. Redactar usando conocimientos generales."
-
-    queries = [
-        f"Acuífero CONAGUA hidrología {municipio} {estado}",
-        f"Tipo de suelo edafología {municipio} {estado}",
-        f"Localidades o poblados más cercanos a {coordenadas} {municipio} INEGI",
-        f"Clima {municipio} {estado} SMN"
-    ]
-    
-    contexto = ""
-    try:
-        with DDGS() as ddgs:
-            for q in queries:
-                resultados = ddgs.text(q, max_results=3)
-                contexto += f"\n--- Búsqueda: {q} ---\n"
-                if resultados:
-                    for r in resultados:
-                        contexto += f"• {r.get('body', '')}\n"
-    except Exception as e:
-        contexto += f"\nError en la búsqueda web automatizada: {e}"
-        
-    return contexto
-
-
 def generar_capitulo_5(
     client: anthropic.Anthropic,
     municipio: str,
@@ -960,11 +930,9 @@ def generar_capitulo_5(
     km_autopista: str,
     nombre_autopista: str,
     contaminante: str,
+    notas_campo: str,
 ) -> str:
-    """Investiga en internet y luego genera el texto del Capítulo 5 usando Claude."""
-    
-    contexto_web = investigar_en_internet(municipio, estado, coordenadas)
-    
+    """Genera el texto del Capítulo 5 usando Claude integrando notas crudas del sitio."""
     prompt_usuario = (
         f"Genera el Capítulo 5 completo para el informe de caracterización del siguiente sitio:\n\n"
         f"- **Municipio:** {municipio}\n"
@@ -973,8 +941,8 @@ def generar_capitulo_5(
         f"- **Km de la autopista:** {km_autopista}\n"
         f"- **Nombre de la autopista:** {nombre_autopista}\n"
         f"- **Contaminante derramado:** {contaminante}\n\n"
-        f"**[CONTEXTO INVESTIGADO DE INTERNET] (Extrae los datos reales de aquí):**\n"
-        f"{contexto_web}\n\n"
+        f"**NOTAS DE CAMPO DEL INGENIERO (INTEGRAR OBLIGATORIAMENTE EN LA REDACCIÓN):**\n"
+        f"{notas_campo if notas_campo else 'Sin notas específicas, usa promedios del municipio.'}\n\n"
         "Redacta el capítulo completo siguiendo la estructura y el formato indicados en el system prompt."
     )
 
@@ -989,59 +957,42 @@ def generar_capitulo_5(
 
 def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
     """Renderiza la Herramienta 4: Generador del Capítulo 5."""
-    st.header("📝 Herramienta 4 — Generador del Capítulo 5 (Investigador Autónomo)")
+    st.header("📝 Herramienta 4 — Generador del Capítulo 5")
     st.caption(
-        "Ingresa los datos del sitio. El Hub Ambiental se conectará a internet en tiempo real para investigar "
-        "la edafología, acuíferos y poblados cercanos, y Claude redactará el borrador pericial con datos precisos."
+        "Ingresa los datos del sitio. Pega tus apuntes de campo crudos para que Claude "
+        "los estructure con rigor técnico legal y elimines la necesidad de editar el reporte a mano."
     )
 
     with st.form("form_cap5"):
         col1, col2 = st.columns(2)
         with col1:
-            municipio = st.text_input(
-                "Municipio *",
-                placeholder="ej. La Huacana",
-                help="Municipio donde ocurrió el siniestro",
-            )
-            estado = st.text_input(
-                "Estado *",
-                placeholder="ej. Michoacán",
-            )
-            coordenadas = st.text_input(
-                "Coordenadas del siniestro *",
-                placeholder="ej. 18°47'44.8\"N, 102°03'34.3\"O",
-            )
+            municipio = st.text_input("Municipio *", placeholder="ej. La Huacana")
+            estado = st.text_input("Estado *", placeholder="ej. Michoacán")
+            coordenadas = st.text_input("Coordenadas del siniestro *", placeholder="ej. 18°47'44.8\"N, 102°03'34.3\"O")
         with col2:
-            km_autopista = st.text_input(
-                "Km de la autopista",
-                placeholder="ej. Km 176+500",
-                value="N/A",
-            )
-            nombre_autopista = st.text_input(
-                "Nombre de la autopista / vialidad",
-                placeholder="ej. Autopista Siglo XXI Morelia – Lázaro Cárdenas",
-                value="N/A",
-            )
+            km_autopista = st.text_input("Km de la autopista", placeholder="ej. Km 176+500", value="N/A")
+            nombre_autopista = st.text_input("Nombre de la autopista", placeholder="ej. Autopista Siglo XXI", value="N/A")
             contaminante = st.selectbox(
                 "Contaminante derramado",
-                options=[
-                    "Gasolina Premium",
-                    "Gasolina Regular",
-                    "Diésel",
-                    "Combustóleo",
-                    "Petróleo crudo",
-                    "Otro hidrocarburo",
-                ],
+                options=["Gasolina Premium", "Gasolina Regular", "Diésel", "Combustóleo", "Petróleo crudo", "Otro hidrocarburo"],
             )
+        
+        st.markdown("---")
+        st.markdown("### 📋 Notas de Campo (Crudas)")
+        notas_campo = st.text_area(
+            "Pega aquí tus viñetas o datos duros de tu investigación (Acuíferos, suelo, poblados cercanos). Claude los redactará como texto profesional:",
+            placeholder="Ejemplo: Suelo Regosol limo-arcilloso muy compactado. Poblado El Pochote a 439m con 9 habitantes. Acuífero Lázaro Cárdenas 1617. Cerca de arroyo Huizache y Presa Infiernillo. Clima seco cálido seco. Vegetación afectada: maleza y pasto.",
+            height=150
+        )
 
-        submitted = st.form_submit_button("🚀 Investigar y Generar Capítulo 5", type="primary")
+        submitted = st.form_submit_button("✍️ Generar Capítulo 5", type="primary")
 
     if submitted:
         if not municipio or not estado or not coordenadas:
             st.error("Por favor completa los campos obligatorios: Municipio, Estado y Coordenadas.")
             return
 
-        with st.spinner(f"🔍 Fase 1: El Agente está investigando en internet el sitio en {municipio}…"):
+        with st.spinner(f"Redactando Capítulo 5 para {municipio}, {estado} integrando notas de campo…"):
             texto = generar_capitulo_5(
                 client,
                 municipio=municipio,
@@ -1050,24 +1001,25 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
                 km_autopista=km_autopista,
                 nombre_autopista=nombre_autopista,
                 contaminante=contaminante,
+                notas_campo=notas_campo,
             )
 
-        st.success("✅ Capítulo 5 generado. Investigación y redacción completadas.")
-        st.subheader(f"Borrador — Capítulo 5: {municipio}, {estado}")
+        st.success("✅ Capítulo 5 generado con precisión pericial.")
+        st.subheader(f"Borrador Final — Capítulo 5: {municipio}, {estado}")
 
         st.markdown(texto)
 
         st.download_button(
             "⬇️ Descargar borrador (.txt)",
             data=texto.encode("utf-8"),
-            file_name=f"capitulo5_{municipio.replace(' ', '_')}_{estado.replace(' ', '_')}.txt",
+            file_name=f"capitulo5_{municipio.replace(' ', '_')}.txt",
             mime="text/plain",
         )
 
         st.download_button(
             "⬇️ Descargar borrador (.md)",
             data=texto.encode("utf-8"),
-            file_name=f"capitulo5_{municipio.replace(' ', '_')}_{estado.replace(' ', '_')}.md",
+            file_name=f"capitulo5_{municipio.replace(' ', '_')}.md",
             mime="text/markdown",
         )
 
