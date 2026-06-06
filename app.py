@@ -862,7 +862,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 4 – Generador del Capítulo 5
+# HERRAMIENTA 4 – Generador del Capítulo 5 (CON INVESTIGADOR AUTÓNOMO)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_CAP5 = """
@@ -870,58 +870,86 @@ Eres un redactor técnico ambiental senior especializado en elaboración de estu
 para la Agencia de Seguridad, Energía y Ambiente (ASEA) y la SEMARNAT en México.
 
 Tu escritura es precisa, formal y técnica, estructurada como los informes de caracterización
-de sitios contaminados. Usas datos reales de INEGI, CONAGUA, CONAFOR, CONABIO y SMN.
+de sitios contaminados. 
 
-Se te proporcionará: Municipio, Estado y Coordenadas del sitio afectado.
+Se te proporcionará: Municipio, Estado, Coordenadas y un [CONTEXTO INVESTIGADO DE INTERNET].
+REGLA DE ORO: El [CONTEXTO INVESTIGADO DE INTERNET] contiene los apuntes de una búsqueda web 
+realizada en tiempo real sobre el acuífero local, edafología, clima y localidades cercanas. 
+DEBES extraer la "verdad" de ahí y usar esos datos exactos (nombres de acuíferos, distancias, 
+tipos de suelo, poblados) para redactar tu informe. NO inventes ni uses datos genéricos si la 
+información específica está presente en el contexto web.
 
 Redacta el **Capítulo 5 – Características Generales del Sitio Contaminado** con los siguientes sub-apartados.
-Para cada sub-apartado, escribe entre 3 y 6 párrafos técnicos con datos realistas del municipio indicado.
-Incluye, donde sea pertinente, menciones a cuerpos de agua, acuíferos (CONAGUA), tipos de clima (Köppen),
-tipos de suelo (FAO/WRB), vegetación (INFyS/CONABIO), fauna (SEMARNAT), y datos poblacionales (INEGI 2020).
+Para cada sub-apartado, escribe entre 3 y 6 párrafos técnicos.
 
 **ESTRUCTURA OBLIGATORIA:**
 
 ## 5. CARACTERÍSTICAS GENERALES DEL SITIO CONTAMINADO
 
 ### 5.1 Localización del Sitio
-[Descripción de ubicación con municipio, estado, coordenadas, colindancias geográficas]
+[Descripción de ubicación con municipio, estado, coordenadas, colindancias]
 
 ### 5.2 Orografía y Geología
-[Tipo de relieve según INEGI, tipo de roca, características del piedemonte o terreno]
+[Tipo de relieve, tipo de roca, características del piedemonte o terreno]
 
 ### 5.3 Hidrografía e Hidrología
-[Cuenca hidrológica, subcuenca, cuerpos de agua superficiales y subterráneos, acuífero de CONAGUA]
+[Cuenca hidrológica, subcuenca, cuerpos de agua superficiales, acuífero local según contexto]
 
 ### 5.4 Clima
-[Tipo de clima Köppen, temperatura media anual, precipitación media anual, temporada de lluvias]
+[Tipo de clima Köppen, temperatura, precipitación según contexto]
 
 ### 5.5 Flora
-[Tipos de vegetación predominante, géneros dominantes, vegetación secundaria en el sitio]
+[Tipos de vegetación predominante, vegetación secundaria afectada]
 
 ### 5.6 Fauna
-[Fauna reportada en la región, especies bajo protección NOM-059, fauna observada en el sitio]
+[Fauna reportada en la región, especies NOM-059]
 
 ### 5.7 Clasificación y Uso de Suelo
-[Tipo de suelo FAO, uso actual, clasificación según NOM-138-SEMARNAT/SSA1-2012]
+[Uso actual, clasificación según NOM-138-SEMARNAT/SSA1-2012]
 
 ### 5.8 Edafología
-[Tipo edafológico (INEGI), características físicas: textura, permeabilidad, profundidad]
+[Tipo edafológico local, características físicas: textura, permeabilidad según contexto]
 
 ### 5.9 Población
-[Datos poblacionales INEGI 2020 del municipio, localidades cercanas al sitio]
+[Poblados más cercanos al sitio exacto y su distancia según contexto]
 
 ### 5.10 Economía
-[Actividades económicas principales: agricultura, ganadería, comercio, industria]
+[Actividades económicas principales de la zona]
 
 REGLAS ESTRICTAS:
 - Escribe siempre en tercera persona y tiempo presente.
-- No inventes coordenadas específicas ni datos que claramente no correspondan al municipio dado.
-- Cuando menciones datos numéricos de fuentes oficiales (población, temperaturas, etc.),
-  indícalos como valores típicos o referenciales del municipio.
 - Usa terminología técnica ambiental mexicana.
 - NO uses bullet points; redacta en prosa continua dentro de cada sub-apartado.
 - Extensión total esperada: entre 1,500 y 3,000 palabras.
 """
+
+def investigar_en_internet(municipio: str, estado: str, coordenadas: str) -> str:
+    """Realiza búsquedas automatizadas en internet para obtener contexto real del sitio."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        return "ERROR INTERNO: La librería 'duckduckgo-search' no está instalada. Redactar usando conocimientos generales."
+
+    queries = [
+        f"Acuífero CONAGUA hidrología {municipio} {estado}",
+        f"Tipo de suelo edafología {municipio} {estado}",
+        f"Localidades o poblados más cercanos a {coordenadas} {municipio} INEGI",
+        f"Clima {municipio} {estado} SMN"
+    ]
+    
+    contexto = ""
+    try:
+        with DDGS() as ddgs:
+            for q in queries:
+                resultados = ddgs.text(q, max_results=3)
+                contexto += f"\n--- Búsqueda: {q} ---\n"
+                if resultados:
+                    for r in resultados:
+                        contexto += f"• {r.get('body', '')}\n"
+    except Exception as e:
+        contexto += f"\nError en la búsqueda web automatizada: {e}"
+        
+    return contexto
 
 
 def generar_capitulo_5(
@@ -933,7 +961,10 @@ def generar_capitulo_5(
     nombre_autopista: str,
     contaminante: str,
 ) -> str:
-    """Genera el texto del Capítulo 5 usando Claude."""
+    """Investiga en internet y luego genera el texto del Capítulo 5 usando Claude."""
+    
+    contexto_web = investigar_en_internet(municipio, estado, coordenadas)
+    
     prompt_usuario = (
         f"Genera el Capítulo 5 completo para el informe de caracterización del siguiente sitio:\n\n"
         f"- **Municipio:** {municipio}\n"
@@ -942,6 +973,8 @@ def generar_capitulo_5(
         f"- **Km de la autopista:** {km_autopista}\n"
         f"- **Nombre de la autopista:** {nombre_autopista}\n"
         f"- **Contaminante derramado:** {contaminante}\n\n"
+        f"**[CONTEXTO INVESTIGADO DE INTERNET] (Extrae los datos reales de aquí):**\n"
+        f"{contexto_web}\n\n"
         "Redacta el capítulo completo siguiendo la estructura y el formato indicados en el system prompt."
     )
 
@@ -956,10 +989,10 @@ def generar_capitulo_5(
 
 def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
     """Renderiza la Herramienta 4: Generador del Capítulo 5."""
-    st.header("📝 Herramienta 4 — Generador del Capítulo 5")
+    st.header("📝 Herramienta 4 — Generador del Capítulo 5 (Investigador Autónomo)")
     st.caption(
-        "Ingresa los datos del sitio. Claude redactará un borrador profesional del Capítulo 5 "
-        "(Características Generales del Sitio) listo para integrar al informe."
+        "Ingresa los datos del sitio. El Hub Ambiental se conectará a internet en tiempo real para investigar "
+        "la edafología, acuíferos y poblados cercanos, y Claude redactará el borrador pericial con datos precisos."
     )
 
     with st.form("form_cap5"):
@@ -1001,16 +1034,14 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
                 ],
             )
 
-        submitted = st.form_submit_button("✍️ Generar Capítulo 5", type="primary")
+        submitted = st.form_submit_button("🚀 Investigar y Generar Capítulo 5", type="primary")
 
     if submitted:
         if not municipio or not estado or not coordenadas:
             st.error("Por favor completa los campos obligatorios: Municipio, Estado y Coordenadas.")
             return
 
-        with st.spinner(
-            f"Redactando Capítulo 5 para {municipio}, {estado}… (puede tardar 30-60 seg)"
-        ):
+        with st.spinner(f"🔍 Fase 1: El Agente está investigando en internet el sitio en {municipio}…"):
             texto = generar_capitulo_5(
                 client,
                 municipio=municipio,
@@ -1021,7 +1052,7 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
                 contaminante=contaminante,
             )
 
-        st.success("✅ Capítulo 5 generado correctamente.")
+        st.success("✅ Capítulo 5 generado. Investigación y redacción completadas.")
         st.subheader(f"Borrador — Capítulo 5: {municipio}, {estado}")
 
         st.markdown(texto)
