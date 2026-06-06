@@ -2,7 +2,7 @@
 Hub de Automatización Ambiental
 ================================
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
-Motor cognitivo: Claude claude-sonnet-4-20250514 (Anthropic API).
+Motor cognitivo: Claude 3.5 Sonnet (Anthropic API).
 
 Herramientas:
   1. Filtro y Etiquetado de Fotografías (Visión)
@@ -160,7 +160,7 @@ def analizar_fotografia(client: anthropic.Anthropic, image_bytes: bytes, media_t
     """
     b64 = image_to_b64(image_bytes)
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-3-5-sonnet-latest",
         max_tokens=512,
         system=SYSTEM_PROMPT_VISION,
         messages=[
@@ -378,7 +378,7 @@ def auditar_informe(client: anthropic.Anthropic, texto_pdf: str) -> dict:
     texto_truncado = texto_pdf[:180_000]
 
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-3-5-sonnet-latest",
         max_tokens=4096,
         system=SYSTEM_PROMPT_AUDITOR,
         messages=[
@@ -480,12 +480,12 @@ def render_herramienta_auditor(client: anthropic.Anthropic) -> None:
                     expanded=(gravedad == "ALTA"),
                 ):
                     col1, col2 = st.columns(2)
-                    col1.markdown(f"**Valor correcto (referencia):**  \n`{disc.get('valor_referencia', '')}`")
-                    col2.markdown(f"**Valor discrepante encontrado:**  \n`{disc.get('valor_discrepante', '')}`")
+                    col1.markdown(f"**Valor correcto (referencia):** \n`{disc.get('valor_referencia', '')}`")
+                    col2.markdown(f"**Valor discrepante encontrado:** \n`{disc.get('valor_discrepante', '')}`")
                     st.markdown(f"**Ubicación del error:** {disc.get('ubicacion_discrepante', '')}")
                     st.info(f"💡 **Recomendación:** {disc.get('recomendacion', '')}")
 
-        # Descargar reporte JSON
+        # --- Botón de descarga ---
         st.download_button(
             "⬇️ Descargar reporte completo (JSON)",
             data=json.dumps(resultado, ensure_ascii=False, indent=2).encode("utf-8"),
@@ -569,27 +569,16 @@ _MAX_PAGES_PER_CALL: int = 20
 def pdf_a_imagenes(pdf_bytes: bytes, dpi: int = _PDF_RENDER_DPI) -> list[bytes]:
     """
     Convierte cada página del PDF en una imagen JPEG usando PyMuPDF (fitz).
-
-    Args:
-        pdf_bytes: Contenido binario del PDF.
-        dpi:       Resolución de renderizado. 150 DPI es suficiente para texto impreso;
-                   usa 200 DPI si hay escritura a mano muy pequeña.
-
-    Returns:
-        Lista de bytes JPEG, uno por página.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     paginas_jpeg: list[bytes] = []
 
-    # fitz trabaja con una matriz de transformación; DPI 72 es base, escalamos.
     zoom = dpi / 72.0
     matriz = fitz.Matrix(zoom, zoom)
 
     for num_pag in range(len(doc)):
         page = doc[num_pag]
-        # Renderizar como pixmap RGB (sin canal alfa para reducir peso)
         pix = page.get_pixmap(matrix=matriz, alpha=False)
-        # Convertir a JPEG en memoria
         jpeg_bytes = pix.tobytes(output="jpeg", jpg_quality=88)
         paginas_jpeg.append(jpeg_bytes)
 
@@ -599,16 +588,7 @@ def pdf_a_imagenes(pdf_bytes: bytes, dpi: int = _PDF_RENDER_DPI) -> list[bytes]:
 
 def _construir_contenido_vision(paginas_jpeg: list[bytes], num_lote: int, total_lotes: int) -> list[dict]:
     """
-    Construye la lista de bloques de contenido para la API multimodal de Claude.
-    Intercala un texto introductorio con los bloques de imagen de cada página.
-
-    Args:
-        paginas_jpeg: Lista de bytes JPEG del lote actual.
-        num_lote:     Número de lote (1-based), para informar a Claude.
-        total_lotes:  Total de lotes, para contexto.
-
-    Returns:
-        Lista de dicts con el formato de contenido de la API de Anthropic.
+    Constuye la lista de bloques de contenido para la API multimodal de Claude.
     """
     contenido: list[dict] = [
         {
@@ -641,22 +621,10 @@ def _construir_contenido_vision(paginas_jpeg: list[bytes], num_lote: int, total_
 
 def parsear_resultados_lab(client: anthropic.Anthropic, paginas_jpeg: list[bytes]) -> list[dict]:
     """
-    Envía las páginas del PDF como imágenes a Claude Vision y retorna los datos
-    estructurados de las muestras de laboratorio.
-
-    Si el PDF tiene más de _MAX_PAGES_PER_CALL páginas, las procesa en lotes y
-    consolida todos los resultados en un único DataFrame.
-
-    Args:
-        client:       Cliente inicializado de Anthropic.
-        paginas_jpeg: Lista de bytes JPEG de cada página (salida de pdf_a_imagenes).
-
-    Returns:
-        Lista de dicts con los datos de muestras, lista para convertir a DataFrame.
+    Envía las páginas del PDF como imágenes a Claude Vision y retorna los datos estructurados.
     """
     todas_las_filas: list[dict] = []
 
-    # Dividir en lotes si el documento es grande
     lotes = [
         paginas_jpeg[i : i + _MAX_PAGES_PER_CALL]
         for i in range(0, len(paginas_jpeg), _MAX_PAGES_PER_CALL)
@@ -667,7 +635,7 @@ def parsear_resultados_lab(client: anthropic.Anthropic, paginas_jpeg: list[bytes
         contenido = _construir_contenido_vision(lote, num_lote, total_lotes)
 
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-3-5-sonnet-latest",
             max_tokens=8192,
             system=SYSTEM_PROMPT_LAB,
             messages=[{"role": "user", "content": contenido}],
@@ -693,8 +661,7 @@ def parsear_resultados_lab(client: anthropic.Anthropic, paginas_jpeg: list[bytes
 
 def highlight_exceedances(df: pd.DataFrame) -> pd.DataFrame.style:  # type: ignore[type-arg]
     """
-    Aplica estilo condicional: rojo si el valor supera el límite NOM-138,
-    naranja si está entre 80-100% del límite, verde si está dentro.
+    Aplica estilo condicional: rojo si supera el límite, naranja si está cerca (80-100%).
     """
     def color_cell(val: Any, limit: float) -> str:
         try:
@@ -730,7 +697,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         "Claude lo leerá visualmente y estructurará los datos contra los LMP de la NOM-138."
     )
 
-    # Mostrar límites de referencia
     with st.expander("📏 Límites NOM-138 (Uso Agrícola/Forestal/Pecuario/Conservación)", expanded=False):
         df_lim = pd.DataFrame(
             [(k, f"{v} mg/kg") for k, v in NOM_138_LIMITES.items()],
@@ -738,7 +704,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         )
         st.dataframe(df_lim, hide_index=True, use_container_width=True)
 
-    # Selector de DPI para documentos con escritura a mano
     with st.expander("⚙️ Configuración avanzada", expanded=False):
         dpi = st.slider(
             "Resolución de renderizado (DPI)",
@@ -765,7 +730,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     if st.button("🧬 Procesar resultados", type="primary", key="btn_lab"):
         pdf_bytes = uploaded_pdf.read()
 
-        # PASO 1: Renderizar páginas como imágenes
         with st.spinner("Convirtiendo páginas del PDF a imágenes…"):
             try:
                 paginas_jpeg = pdf_a_imagenes(pdf_bytes, dpi=dpi)
@@ -780,18 +744,15 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             f"Lotes de envío: {((num_paginas - 1) // _MAX_PAGES_PER_CALL) + 1}"
         )
 
-        # Previsualización de miniaturas (máx. 5 páginas)
         if num_paginas > 0:
             with st.expander(f"🔍 Previsualizar páginas ({min(num_paginas, 5)} de {num_paginas})", expanded=False):
                 preview_cols = st.columns(min(num_paginas, 5))
                 for idx, col in enumerate(preview_cols):
                     col.image(paginas_jpeg[idx], caption=f"Pág. {idx + 1}", use_container_width=True)
 
-        # PASO 2: Enviar imágenes a Claude Vision
         lotes_totales = ((num_paginas - 1) // _MAX_PAGES_PER_CALL) + 1
         progress_bar = st.progress(0, text="Enviando imágenes a Claude Vision…")
 
-        # Procesamiento con barra de progreso por lote
         todas_las_filas: list[dict] = []
         lotes = [
             paginas_jpeg[i : i + _MAX_PAGES_PER_CALL]
@@ -805,7 +766,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             )
             contenido = _construir_contenido_vision(lote, num_lote, lotes_totales)
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-3-5-sonnet-latest",
                 max_tokens=8192,
                 system=SYSTEM_PROMPT_LAB,
                 messages=[{"role": "user", "content": contenido}],
@@ -827,21 +788,16 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         progress_bar.empty()
 
         if not todas_las_filas:
-            st.error(
-                "No se encontraron datos de muestras en el PDF. "
-                "Verifica que el documento contenga tablas de resultados de laboratorio."
-            )
+            st.error("No se encontraron datos de muestras en el PDF.")
             return
 
         df = pd.DataFrame(todas_las_filas)
 
-        # Convertir columnas numéricas
         numeric_cols = ["HFL", "Benceno", "Tolueno", "Etilbenceno", "Xilenos", "pH", "Humedad_pct", "profundidad_m"]
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Métricas de resumen
         st.subheader("📊 Resumen de Resultados")
         st.success(f"✅ Se extrajeron **{len(df)} muestras** de {num_paginas} página(s).")
 
@@ -860,7 +816,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                 delta_color="inverse",
             )
 
-        # Tabla con highlighting
         st.subheader("📋 Tabla de Resultados (valores fuera de norma en 🔴)")
 
         leyenda_cols = st.columns(3)
@@ -871,7 +826,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         styled = highlight_exceedances(df)
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
-        # Detalle de muestras fuera de norma
         param_cols = [p for p in NOM_138_LIMITES.keys() if p in df.columns]
         if param_cols:
             mask = df[param_cols].apply(
@@ -887,7 +841,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                     hide_index=True,
                 )
 
-        # Exportar
         col_csv, col_excel = st.columns(2)
         with col_csv:
             st.download_button(
@@ -993,7 +946,7 @@ def generar_capitulo_5(
     )
 
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-3-5-sonnet-latest",
         max_tokens=8192,
         system=SYSTEM_PROMPT_CAP5,
         messages=[{"role": "user", "content": prompt_usuario}],
@@ -1071,10 +1024,8 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
         st.success("✅ Capítulo 5 generado correctamente.")
         st.subheader(f"Borrador — Capítulo 5: {municipio}, {estado}")
 
-        # Mostrar el texto con buen formato
         st.markdown(texto)
 
-        # Descargar como .txt
         st.download_button(
             "⬇️ Descargar borrador (.txt)",
             data=texto.encode("utf-8"),
@@ -1082,7 +1033,6 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
             mime="text/plain",
         )
 
-        # Descargar como .md
         st.download_button(
             "⬇️ Descargar borrador (.md)",
             data=texto.encode("utf-8"),
@@ -1120,7 +1070,7 @@ def render_sidebar() -> str:
 
         st.markdown("---")
         st.caption(
-            "⚙️ Motor: Claude claude-sonnet-4-20250514  \n"
+            "⚙️ Motor: Claude 3.5 Sonnet  \n"
             "📜 NOM-138-SEMARNAT/SSA1-2012  \n"
             "v1.0.0"
         )
@@ -1129,26 +1079,20 @@ def render_sidebar() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Entry Point
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # Sistema de Autenticación (Login)
 # ---------------------------------------------------------------------------
 def check_password() -> bool:
     """Retorna True si el usuario ingresó las credenciales correctas."""
     
     def password_entered():
-        # Comparamos lo que escribió el usuario con lo que está en secrets.toml
         if (st.session_state["username"] == st.secrets["credenciales"]["usuario"]
             and st.session_state["password"] == st.secrets["credenciales"]["password"]):
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Borramos el password por seguridad
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # Si es la primera vez que entra, mostramos los campos vacíos
         st.markdown("## 🔒 Acceso Restringido")
         st.markdown("Por favor, ingresa tus credenciales para usar el Hub Ambiental.")
         st.text_input("Usuario", key="username")
@@ -1157,7 +1101,6 @@ def check_password() -> bool:
         return False
     
     elif not st.session_state["password_correct"]:
-        # Si se equivocó de contraseña, mostramos error
         st.markdown("## 🔒 Acceso Restringido")
         st.text_input("Usuario", key="username")
         st.text_input("Contraseña", type="password", key="password")
@@ -1166,18 +1109,13 @@ def check_password() -> bool:
         return False
     
     else:
-        # Si la contraseña es correcta, pasa libremente
         return True
     
 def main() -> None:
     """Punto de entrada principal de la aplicación."""
-    # Inicializar cliente de Anthropic
     client = get_client()
-
-    # Sidebar con navegación
     herramienta = render_sidebar()
 
-    # Enrutamiento a cada herramienta
     if "Filtro" in herramienta:
         render_herramienta_fotos(client)
     elif "Auditor" in herramienta:
