@@ -3,6 +3,15 @@ Hub de Automatización Ambiental
 ================================
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
+
+Herramientas:
+  1. Filtro y Etiquetado de Fotografías (Visión)
+  2. Auditor de Machotes           (Validación de Consistencia)
+  3. Vaciado Automático de Lab     (Parsing y Lógica NOM-138)
+  4. Generador Capítulo 5          (Características del Sitio)
+
+Autor  : Hub de Automatización Ambiental
+Versión: 1.2.0 (DB Local)
 """
 
 from __future__ import annotations
@@ -331,6 +340,13 @@ def render_sidebar() -> str:
 
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🔎 Auditor de Machotes", "🧪 Vaciado de Laboratorio", "📝 Generador Cap. 5"], label_visibility="collapsed")
+        
+        st.markdown("---")
+        st.caption(
+            "⚙️ Motor: Claude 4.6 Sonnet  \n"
+            "📜 NOM-138-SEMARNAT/SSA1-2012  \n"
+            "v1.2.0 (DB Local)"
+        )
     return herramienta
 
 # ---------------------------------------------------------------------------
