@@ -2,7 +2,7 @@
 Hub de Automatización Ambiental
 ================================
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
-Motor cognitivo: Claude 3.5 Sonnet (Anthropic API).
+Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
 Herramientas:
   1. Filtro y Etiquetado de Fotografías (Visión)
