@@ -11,7 +11,7 @@ Herramientas:
   4. Generador Capítulo 5          (Características del Sitio)
 
 Autor  : Hub de Automatización Ambiental
-Versión: 1.0.0
+Versión: 1.1.0 (Arquitectura Colaborativa)
 """
 
 # ---------------------------------------------------------------------------
@@ -125,6 +125,20 @@ def extract_pdf_tables(pdf_bytes: bytes) -> list[list[list[str | None]]]:
 
 
 # ---------------------------------------------------------------------------
+# CONFIGURACIÓN DEL ESPACIO DE TRABAJO (SESIÓN)
+# ---------------------------------------------------------------------------
+def configurar_sesion_colaborativa():
+    """Inicializa las variables de estado para el manejo de proyectos."""
+    if 'usuario_actual' not in st.session_state:
+        # Extrae el usuario validado en el login
+        st.session_state.usuario_actual = st.session_state.get("username", "Ingeniero") 
+        
+    if 'proyecto_actual' not in st.session_state:
+        st.session_state.proyecto_actual = None
+        st.session_state.nombre_proyecto = "Ningún proyecto seleccionado"
+
+
+# ---------------------------------------------------------------------------
 # HERRAMIENTA 1 – Filtro y Etiquetado de Fotografías
 # ---------------------------------------------------------------------------
 
@@ -184,7 +198,6 @@ def analizar_fotografia(client: anthropic.Anthropic, image_bytes: bytes, media_t
         ],
     )
     raw = message.content[0].text.strip()
-    # Limpiar posibles bloques de código markdown
     raw = re.sub(r"```json|```", "", raw).strip()
     try:
         return json.loads(raw)
@@ -203,6 +216,10 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
         "Sube las fotos de campo. Claude evaluará cada una y generará pies de foto técnicos "
         "para las imágenes útiles, descartando las inservibles."
     )
+
+    if not st.session_state.proyecto_actual:
+        st.warning("⚠️ Debes seleccionar un proyecto en el menú lateral para utilizar esta herramienta.")
+        return
 
     uploaded_files = st.file_uploader(
         "Selecciona una o varias fotografías",
@@ -224,13 +241,11 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
 
         for idx, uf in enumerate(uploaded_files):
             raw_bytes = uf.read()
-            # Detectar media type
             suffix = Path(uf.name).suffix.lower()
             mt_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                       ".png": "image/png", ".webp": "image/webp"}
             media_type = mt_map.get(suffix, "image/jpeg")
 
-            # Redimensionar para reducir tokens
             try:
                 processed = resize_image_if_needed(raw_bytes)
                 mt_send = "image/jpeg"
@@ -294,7 +309,7 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
             st.download_button(
                 "⬇️ Descargar pies de foto (CSV)",
                 data=csv,
-                file_name="pies_de_foto.csv",
+                file_name=f"pies_de_foto_{st.session_state.proyecto_actual}.csv",
                 mime="text/csv",
             )
 
@@ -374,7 +389,6 @@ REGLAS ESTRICTAS:
 
 def auditar_informe(client: anthropic.Anthropic, texto_pdf: str) -> dict:
     """Envía el texto del PDF a Claude y retorna el reporte de auditoría."""
-    # Limitar a ~180k caracteres para no exceder ventana de contexto
     texto_truncado = texto_pdf[:180_000]
 
     message = client.messages.create(
@@ -415,6 +429,10 @@ def render_herramienta_auditor(client: anthropic.Anthropic) -> None:
         "Sube el PDF del informe preliminar. Claude extraerá las entidades clave y detectará "
         "discrepancias por errores de copiar-pegar entre secciones."
     )
+
+    if not st.session_state.proyecto_actual:
+        st.warning("⚠️ Debes seleccionar un proyecto en el menú lateral para utilizar esta herramienta.")
+        return
 
     uploaded_pdf = st.file_uploader(
         "Selecciona el PDF del informe",
@@ -489,7 +507,7 @@ def render_herramienta_auditor(client: anthropic.Anthropic) -> None:
         st.download_button(
             "⬇️ Descargar reporte completo (JSON)",
             data=json.dumps(resultado, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name="reporte_auditoria.json",
+            file_name=f"auditoria_{st.session_state.proyecto_actual}.json",
             mime="application/json",
         )
 
@@ -558,18 +576,12 @@ FORMATO DE RESPUESTA OBLIGATORIO — JSON array puro, sin markdown, sin texto ad
 RESPONDE ÚNICAMENTE CON EL JSON ARRAY. CERO TEXTO ANTES O DESPUÉS DEL ARRAY.
 """
 
-# Resolución de renderizado (DPI). 150 es el balance óptimo calidad/tokens.
-# Aumentar a 200 si el documento tiene letra muy pequeña o escritura a mano apretada.
 _PDF_RENDER_DPI: int = 150
-# Límite de páginas por llamada API para no exceder la ventana de contexto.
-# Con DPI=150, cada página consume ~1,600 tokens; 20 págs ≈ 32k tokens de imagen.
 _MAX_PAGES_PER_CALL: int = 20
 
 
 def pdf_a_imagenes(pdf_bytes: bytes, dpi: int = _PDF_RENDER_DPI) -> list[bytes]:
-    """
-    Convierte cada página del PDF en una imagen JPEG usando PyMuPDF (fitz).
-    """
+    """Convierte cada página del PDF en una imagen JPEG usando PyMuPDF (fitz)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     paginas_jpeg: list[bytes] = []
 
@@ -587,9 +599,7 @@ def pdf_a_imagenes(pdf_bytes: bytes, dpi: int = _PDF_RENDER_DPI) -> list[bytes]:
 
 
 def _construir_contenido_vision(paginas_jpeg: list[bytes], num_lote: int, total_lotes: int) -> list[dict]:
-    """
-    Constuye la lista de bloques de contenido para la API multimodal de Claude.
-    """
+    """Constuye la lista de bloques de contenido para la API multimodal de Claude."""
     contenido: list[dict] = [
         {
             "type": "text",
@@ -620,9 +630,7 @@ def _construir_contenido_vision(paginas_jpeg: list[bytes], num_lote: int, total_
 
 
 def parsear_resultados_lab(client: anthropic.Anthropic, paginas_jpeg: list[bytes]) -> list[dict]:
-    """
-    Envía las páginas del PDF como imágenes a Claude Vision y retorna los datos estructurados.
-    """
+    """Envía las páginas del PDF como imágenes a Claude Vision y retorna los datos estructurados."""
     todas_las_filas: list[dict] = []
 
     lotes = [
@@ -660,9 +668,7 @@ def parsear_resultados_lab(client: anthropic.Anthropic, paginas_jpeg: list[bytes
 
 
 def highlight_exceedances(df: pd.DataFrame) -> pd.DataFrame.style:  # type: ignore[type-arg]
-    """
-    Aplica estilo condicional: rojo si supera el límite, naranja si está cerca (80-100%).
-    """
+    """Aplica estilo condicional: rojo si supera el límite, naranja si está cerca (80-100%)."""
     def color_cell(val: Any, limit: float) -> str:
         try:
             v = float(val)
@@ -696,6 +702,10 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         "Sube el PDF del laboratorio — puede ser escaneado o con datos escritos a mano. "
         "Claude lo leerá visualmente y estructurará los datos contra los LMP de la NOM-138."
     )
+
+    if not st.session_state.proyecto_actual:
+        st.warning("⚠️ Debes seleccionar un proyecto en el menú lateral para utilizar esta herramienta.")
+        return
 
     with st.expander("📏 Límites NOM-138 (Uso Agrícola/Forestal/Pecuario/Conservación)", expanded=False):
         df_lim = pd.DataFrame(
@@ -846,7 +856,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             st.download_button(
                 "⬇️ Descargar CSV",
                 data=df.to_csv(index=False).encode("utf-8"),
-                file_name="resultados_laboratorio.csv",
+                file_name=f"lab_{st.session_state.proyecto_actual}.csv",
                 mime="text/csv",
             )
         with col_excel:
@@ -856,7 +866,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             st.download_button(
                 "⬇️ Descargar Excel",
                 data=buf.getvalue(),
-                file_name="resultados_laboratorio.xlsx",
+                file_name=f"lab_{st.session_state.proyecto_actual}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
@@ -963,6 +973,10 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
         "los estructure con rigor técnico legal y elimines la necesidad de editar el reporte a mano."
     )
 
+    if not st.session_state.proyecto_actual:
+        st.warning("⚠️ Debes seleccionar un proyecto en el menú lateral para utilizar esta herramienta.")
+        return
+
     with st.form("form_cap5"):
         col1, col2 = st.columns(2)
         with col1:
@@ -1012,14 +1026,14 @@ def render_herramienta_cap5(client: anthropic.Anthropic) -> None:
         st.download_button(
             "⬇️ Descargar borrador (.txt)",
             data=texto.encode("utf-8"),
-            file_name=f"capitulo5_{municipio.replace(' ', '_')}.txt",
+            file_name=f"capitulo5_{st.session_state.proyecto_actual}.txt",
             mime="text/plain",
         )
 
         st.download_button(
             "⬇️ Descargar borrador (.md)",
             data=texto.encode("utf-8"),
-            file_name=f"capitulo5_{municipio.replace(' ', '_')}.md",
+            file_name=f"capitulo5_{st.session_state.proyecto_actual}.md",
             mime="text/markdown",
         )
 
@@ -1032,8 +1046,33 @@ def render_sidebar() -> str:
     """Renderiza el sidebar y retorna la herramienta seleccionada."""
     with st.sidebar:
         st.markdown("## 🌿 Hub Ambiental")
+        
+        # --- NUEVO: ESPACIO DE TRABAJO ---
+        st.write(f"👤 **Usuario:** {st.session_state.get('usuario_actual', 'Ingeniero')}")
         st.markdown("---")
 
+        # Simulador de proyectos
+        proyectos_activos = [
+            "Seleccionar...", 
+            "PRJ-001: Derrame Diésel Lagos de Moreno", 
+            "PRJ-002: Siniestro Gasolina Villa de Arriaga"
+        ]
+
+        st.subheader("📂 Espacio de Trabajo")
+        proyecto_seleccionado = st.selectbox("Proyecto Activo:", proyectos_activos)
+
+        if proyecto_seleccionado != "Seleccionar...":
+            # Guardamos el ID y el Nombre en la memoria temporal de la sesión
+            st.session_state.proyecto_actual = proyecto_seleccionado.split(":")[0] 
+            st.session_state.nombre_proyecto = proyecto_seleccionado.split(":")[1].strip()
+            st.success(f"✅ Conectado a: {st.session_state.proyecto_actual}")
+        else:
+            st.warning("⚠️ Selecciona un proyecto para comenzar.")
+            st.session_state.proyecto_actual = None
+
+        st.markdown("---")
+        
+        # --- HERRAMIENTAS ---
         st.markdown("### 🛠️ Herramientas")
         herramienta = st.radio(
             label="Selecciona una herramienta:",
@@ -1055,7 +1094,7 @@ def render_sidebar() -> str:
         st.caption(
             "⚙️ Motor: Claude 4.6 Sonnet  \n"
             "📜 NOM-138-SEMARNAT/SSA1-2012  \n"
-            "v1.0.0"
+            "v1.1.0 (Colaborativo)"
         )
 
     return herramienta
@@ -1096,6 +1135,9 @@ def check_password() -> bool:
     
 def main() -> None:
     """Punto de entrada principal de la aplicación."""
+    # Primero validamos configuración de estado
+    configurar_sesion_colaborativa()
+    
     client = get_client()
     herramienta = render_sidebar()
 
