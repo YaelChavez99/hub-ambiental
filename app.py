@@ -45,7 +45,7 @@ NOM_138_LIMITES: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# BASE DE DATOS (Se crea automáticamente en la nube)
+# BASE DE DATOS (Se crea automáticamente)
 # ---------------------------------------------------------------------------
 def inicializar_db():
     conn = sqlite3.connect('hub_ambiental.db')
@@ -83,7 +83,7 @@ def inicializar_db():
     conn.commit()
     conn.close()
 
-# Ejecutamos la base de datos al arrancar
+# Ejecutamos la creación de la base de datos al arrancar
 inicializar_db()
 
 def obtener_proyectos() -> list[str]:
