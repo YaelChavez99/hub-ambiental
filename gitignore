@@ -1,0 +1,11 @@
+# Bases de datos locales
+*.db
+*.sqlite3
+
+# Carpetas temporales de imágenes
+/temp_fotos/
+/uploads/
+
+# Archivos de Python
+__pycache__/
+*.pyc
