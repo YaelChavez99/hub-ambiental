@@ -1053,7 +1053,7 @@ def render_sidebar() -> str:
 
         st.markdown("---")
         st.caption(
-            "⚙️ Motor: Claude 3.5 Sonnet  \n"
+            "⚙️ Motor: Claude 4.6 Sonnet  \n"
             "📜 NOM-138-SEMARNAT/SSA1-2012  \n"
             "v1.0.0"
         )
