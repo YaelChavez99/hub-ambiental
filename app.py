@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.3.0 (Extracción GPS y Clasificación Inteligente de Fotos)
+Versión: 1.4.1 (Descripciones resumidas de máx 15 palabras)
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 from PIL import Image
-from PIL.ExifTags import TAGS, GPSTAGS
 
 # ---------------------------------------------------------------------------
 # Configuración de página
@@ -48,7 +47,7 @@ NOM_138_LIMITES: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# BASE DE DATOS LOCAL (SQLite)
+# BASE DE DATOS LOCAL (SQLite con Soporte de Almacenamiento de Imagen)
 # ---------------------------------------------------------------------------
 def inicializar_db():
     conn = sqlite3.connect('hub_ambiental.db')
@@ -63,13 +62,13 @@ def inicializar_db():
         )
     ''')
     c.execute('''
-        CREATE TABLE IF NOT EXISTS evidencias_fotograficas (
+        CREATE TABLE IF NOT EXISTS fotos_sistema (
             id_foto INTEGER PRIMARY KEY AUTOINCREMENT,
             id_proyecto TEXT,
             categoria_ia TEXT,
             pie_de_foto TEXT,
-            coordenada_gps TEXT,
             nombre_archivo TEXT,
+            foto_b64 TEXT,
             FOREIGN KEY (id_proyecto) REFERENCES proyectos (id_proyecto)
         )
     ''')
@@ -114,59 +113,39 @@ def crear_proyecto_db(id_proj: str, nombre: str, uso: str) -> bool:
     except sqlite3.IntegrityError:
         return False
 
-def guardar_foto_db(id_proyecto: str, categoria: str, pie: str, gps: str, archivo: str):
+def guardar_foto_db(id_proyecto: str, category: str, pie: str, archivo: str, foto_bytes: bytes):
     try:
+        b64_str = base64.b64encode(foto_bytes).decode('utf-8')
         conn = sqlite3.connect('hub_ambiental.db')
         c = conn.cursor()
         c.execute(
-            "INSERT INTO evidencias_fotograficas (id_proyecto, categoria_ia, pie_de_foto, coordenada_gps, nombre_archivo) VALUES (?, ?, ?, ?, ?)",
-            (id_proyecto, categoria, pie, gps, archivo)
+            "INSERT INTO fotos_sistema (id_proyecto, categoria_ia, pie_de_foto, nombre_archivo, foto_b64) VALUES (?, ?, ?, ?, ?)",
+            (id_proyecto, category, pie, archivo, b64_str)
         )
         conn.commit()
         conn.close()
     except Exception as e:
         st.error(f"Error al guardar foto en DB: {e}")
 
-# ---------------------------------------------------------------------------
-# EXTACTOR DE METADATOS GPS (FOTOS)
-# ---------------------------------------------------------------------------
-def transformar_a_grados_decimales(valor, referencia):
-    """Convierte tuplas de coordenadas EXIF (Grados, Minutos, Segundos) a decimal."""
+def cargar_fotos_proyecto(id_proyecto: str) -> list[dict]:
     try:
-        d = float(valor[0])
-        m = float(valor[1])
-        s = float(valor[2])
-        decimal = d + (m / 60.0) + (s / 3600.0)
-        if referencia in ['S', 'W']:
-            decimal = -decimal
-        return decimal
-    except Exception:
-        return None
-
-def extraer_gps_fotografia(image_bytes: bytes) -> str | None:
-    """Extrae las coordenadas GPS reales incrustadas en los metadatos de la imagen."""
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        exif_data = img._getexif()
-        if not exif_data:
-            return None
+        conn = sqlite3.connect('hub_ambiental.db')
+        c = conn.cursor()
+        c.execute("SELECT categoria_ia, pie_de_foto, nombre_archivo, foto_b64 FROM fotos_sistema WHERE id_proyecto = ?", (id_proyecto,))
+        rows = c.fetchall()
+        conn.close()
         
-        info_gps = {}
-        for tag, value in exif_data.items():
-            tag_decodificado = TAGS.get(tag, tag)
-            if tag_decodificado == "GPSInfo":
-                for sub_tag in value:
-                    sub_tag_decodificado = GPSTAGS.get(sub_tag, sub_tag)
-                    info_gps[sub_tag_decodificado] = value[sub_tag]
-        
-        if "GPSLatitude" in info_gps and "GPSLongitude" in info_gps:
-            lat = transformar_a_grados_decimales(info_gps["GPSLatitude"], info_gps.get("GPSLatitudeRef", "N"))
-            lon = transformar_a_grados_decimales(info_gps["GPSLongitude"], info_gps.get("GPSLongitudeRef", "E"))
-            if lat and lon:
-                return f"{lat:.6f}, {lon:.6f}"
+        fotos = []
+        for r in rows:
+            fotos.append({
+                "categoria": r[0],
+                "pie": r[1],
+                "nombre": r[2],
+                "b64": r[3]
+            })
+        return fotos
     except Exception:
-        pass
-    return None
+        return []
 
 # ---------------------------------------------------------------------------
 # Helpers de API
@@ -214,7 +193,7 @@ def configurar_sesion_colaborativa():
         st.session_state.nombre_proyecto = "Ningún proyecto seleccionado"
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 1: FILTRO, GPS E IA
+# HERRAMIENTA 1: FILTRO Y CARPETAS VIRTUALES CON TEXTO RESUMIDO
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_VISION = """
 Eres un auditor técnico ambiental experto en inspección de sitios contaminados por derrames de hidrocarburos en México.
@@ -227,13 +206,14 @@ Para CADA fotografía, debes evaluar a cuál categoría operativa pertenece:
 - "Evidencias de Remediación": Muestra aplicación de bacterias, volteo de biopilas, adición de nutrientes o membranas.
 - "INSERVIBLE": Imágenes borrosas, dedos tapando el lente, fotos de la oficina o minutas impresas.
 
-Redacta un "Pie de foto técnico" profesional en español (10-20 palabras) con lenguaje pericial.
+Escribe una descripción de la fotografía que sea sumamente resumida, clara y general. 
+REGLA INQUEBRANTABLE: Debe tener un máximo estricto de 15 palabras.
 
 Devuelve EXCLUSIVAMENTE un objeto JSON (sin markdown, sin texto extra):
 {
   "clasificacion": "Evidencia del Siniestro" | "Excavaciones" | "Sondeos y Muestreo" | "Evidencias de Remediación" | "INSERVIBLE",
   "razon": "Justificación de una oración",
-  "pie_de_foto": "Texto técnico en prosa" | null
+  "pie_de_foto": "Descripción resumida y general (máx 15 palabras)" | null
 }
 """
 
@@ -249,71 +229,81 @@ def analizar_fotografia(client: anthropic.Anthropic, image_bytes: bytes, media_t
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return {"clasificacion": "INSERVIBLE", "razon": "Error de análisis en la imagen", "pie_de_foto": None}
+        return {"clasificacion": "INSERVIBLE", "razon": "Error de análisis", "pie_de_foto": None}
 
 def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
-    st.header("📷 Herramienta 1 — Filtro, GPS y Clasificación de Evidencias")
-    st.caption("Sube las fotos de campo. El sistema extraerá las coordenadas GPS y Claude las clasificará por actividad técnica.")
+    st.header("📷 Herramienta 1 — Filtro y Archivo Organizado de Evidencias")
+    st.caption("Sube las fotos del sitio. Claude las analizará y las acomodará de forma automática en sus respectivas carpetas de actividad.")
 
     if not st.session_state.proyecto_actual:
         st.warning("⚠️ Debes seleccionar o crear un proyecto en el menú lateral para comenzar.")
         return
 
-    uploaded_files = st.file_uploader("Sube fotos de campo (con GPS habilitado de preferencia)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
-    if not uploaded_files: return
+    with st.expander("➕ Subir Nuevas Fotografías al Expediente", expanded=True):
+        uploaded_files = st.file_uploader("Arrastra o selecciona las imágenes de campo", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
+        
+        if uploaded_files:
+            if st.button("🚀 Procesar y Organizar Imágenes", type="primary"):
+                progress = st.progress(0, text="Clasificando archivos con Inteligencia Artificial…")
+                total = len(uploaded_files)
 
-    if st.button("🔍 Procesar y Geolocalizar Imágenes", type="primary"):
-        utiles = []
-        progress = st.progress(0, text="Analizando metadatos e imágenes…")
-        total = len(uploaded_files)
+                for idx, uf in enumerate(uploaded_files):
+                    raw_bytes = uf.read()
+                    media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}.get(uf.name.split('.')[-1].lower(), "image/jpeg")
+                    try:
+                        processed = resize_image_if_needed(raw_bytes)
+                        mt_send = "image/jpeg"
+                    except Exception:
+                        processed, mt_send = raw_bytes, media_type
 
-        for idx, uf in enumerate(uploaded_files):
-            raw_bytes = uf.read()
-            
-            # 1. Extraer GPS nativo desde los metadatos ocultos
-            coordenadas_reales = extraer_gps_fotografia(raw_bytes) or "Coordenadas no encontradas en archivo"
-            
-            media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}.get(uf.name.split('.')[-1].lower(), "image/jpeg")
-            try:
-                processed = resize_image_if_needed(raw_bytes)
-                mt_send = "image/jpeg"
-            except Exception:
-                processed, mt_send = raw_bytes, media_type
+                    res = analizar_fotografia(client, processed, mt_send)
+                    
+                    if res.get("clasificacion") != "INSERVIBLE":
+                        guardar_foto_db(
+                            st.session_state.proyecto_actual, 
+                            res["clasificacion"], 
+                            res.get("pie_de_foto", "Evidencia fotográfica."), 
+                            uf.name, 
+                            processed
+                        )
 
-            # 2. Enviar a la IA para clasificar la actividad
-            res = analizar_fotografia(client, processed, mt_send)
-            res["nombre"] = uf.name
-            res["bytes_orig"] = raw_bytes
-            res["gps"] = coordenadas_reales
+                    progress.progress((idx + 1) / total, text=f"Acomodando: {uf.name}…")
+                
+                progress.empty()
+                st.success("¡Fotos organizadas con éxito! 📁")
+                st.rerun()
 
-            if res.get("clasificacion") != "INSERVIBLE":
-                utiles.append(res)
-                # 3. Guardar directo en la base de datos vinculada al proyecto activo
-                guardar_foto_db(st.session_state.proyecto_actual, res["clasificacion"], res.get("pie_de_foto", ""), coordenadas_reales, uf.name)
+    st.markdown("---")
+    st.subheader("📁 Carpetas de Evidencias del Proyecto")
 
-            progress.progress((idx + 1) / total, text=f"Procesando {uf.name}…")
+    fotos_guardadas = cargar_fotos_proyecto(st.session_state.proyecto_actual)
 
-        progress.empty()
+    carpetas_definidas = [
+        "Evidencia del Siniestro",
+        "Excavaciones",
+        "Sondeos y Muestreo",
+        "Evidencias de Remediación"
+    ]
 
-        if utiles:
-            st.subheader("📊 Evidencias Guardadas en el Expediente")
-            for i in range(0, len(utiles), 3):
-                cols = st.columns(3)
-                for col, item in zip(cols, utiles[i:i+3]):
-                    with col:
-                        st.image(item["bytes_orig"], use_container_width=True)
-                        st.markdown(f"📂 **Categoría:** `{item['clasificacion']}`")
-                        st.markdown(f"📍 **GPS:** `{item['gps']}`")
-                        st.info(f"🏷️ *{item.get('pie_de_foto', '')}*")
-            
-            df_export = pd.DataFrame([{"Archivo": i["nombre"], "Categoría": i["clasificacion"], "Coordenadas": i["gps"], "Pie de foto": i.get("pie_de_foto", "")} for i in utiles])
-            st.download_button("⬇️ Descargar Bitácora Fotográfica (CSV)", data=df_export.to_csv(index=False).encode("utf-8"), file_name=f"bitacora_fotos_{st.session_state.proyecto_actual}.csv", mime="text/csv")
-        else:
-            st.warning("⚠️ No se identificaron imágenes útiles para el reporte técnico.")
+    for carpeta in carpetas_definidas:
+        fotos_carpeta = [f for f in fotos_guardadas if f["categoria"] == carpeta]
+        
+        with st.expander(f"📂 {carpeta} ({len(fotos_carpeta)})", expanded=False):
+            if not fotos_carpeta:
+                st.caption("Esta carpeta está vacía actualmente.")
+            else:
+                for i in range(0, len(fotos_carpeta), 3):
+                    cols = st.columns(3)
+                    for col, item in zip(cols, fotos_carpeta[i:i+3]):
+                        with col:
+                            img_data = base64.b64decode(item["b64"])
+                            st.image(img_data, use_container_width=True)
+                            st.caption(f"📄 Archivo: {item['nombre']}")
+                            st.info(f"🏷️ *{item['pie']}*")
 
 
-# (Mantenemos el resto de las herramientas estables como en v1.2.0)
-SYSTEM_PROMPT_AUDITOR = """Eres un auditor de la ASEA. Extrae entidades clave y detecta discrepancies en JSON."""
+# (Mantenemos el resto de los módulos estables)
+SYSTEM_PROMPT_AUDITOR = """Eres un auditor de la ASEA. Extrae entidades clave y detecta discrepancias en JSON."""
 def auditar_informe(client: anthropic.Anthropic, texto_pdf: str) -> dict:
     message = client.messages.create(model="claude-sonnet-4-6", max_tokens=4096, system=SYSTEM_PROMPT_AUDITOR, messages=[{"role": "user", "content": texto_pdf[:180000]}])
     raw = re.sub(r"```json|```", "", message.content[0].text.strip()).strip()
@@ -374,7 +364,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🔎 Auditor de Machotes", "🧪 Vaciado de Laboratorio", "📝 Generador Cap. 5"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n📜 NOM-138-SEMARNAT/SSA1-2012  \n**v1.3.0 (GPS + IA)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n📜 NOM-138-SEMARNAT/SSA1-2012  \n**v1.4.1 (Resumen Corto)**")
     return herramienta
 
 def check_password() -> bool:
