@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.4.1 (Descripciones resumidas de máx 15 palabras)
+Versión: 1.4.2 (Carpetas Virtuales + Opción de Eliminar)
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ NOM_138_LIMITES: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# BASE DE DATOS LOCAL (SQLite con Soporte de Almacenamiento de Imagen)
+# BASE DE DATOS LOCAL (SQLite con Soporte de Eliminación)
 # ---------------------------------------------------------------------------
 def inicializar_db():
     conn = sqlite3.connect('hub_ambiental.db')
@@ -131,21 +131,35 @@ def cargar_fotos_proyecto(id_proyecto: str) -> list[dict]:
     try:
         conn = sqlite3.connect('hub_ambiental.db')
         c = conn.cursor()
-        c.execute("SELECT categoria_ia, pie_de_foto, nombre_archivo, foto_b64 FROM fotos_sistema WHERE id_proyecto = ?", (id_proyecto,))
+        # Modificado para extraer también el ID único de la foto
+        c.execute("SELECT id_foto, categoria_ia, pie_de_foto, nombre_archivo, foto_b64 FROM fotos_sistema WHERE id_proyecto = ?", (id_proyecto,))
         rows = c.fetchall()
         conn.close()
         
         fotos = []
         for r in rows:
             fotos.append({
-                "categoria": r[0],
-                "pie": r[1],
-                "nombre": r[2],
-                "b64": r[3]
+                "id_foto": r[0],
+                "categoria": r[1],
+                "pie": r[2],
+                "nombre": r[3],
+                "b64": r[4]
             })
         return fotos
     except Exception:
         return []
+
+def eliminar_foto_db(id_foto: int) -> bool:
+    """Elimina permanentemente una fotografía de la base de datos."""
+    try:
+        conn = sqlite3.connect('hub_ambiental.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM fotos_sistema WHERE id_foto = ?", (id_foto,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        return False
 
 # ---------------------------------------------------------------------------
 # Helpers de API
@@ -193,7 +207,7 @@ def configurar_sesion_colaborativa():
         st.session_state.nombre_proyecto = "Ningún proyecto seleccionado"
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 1: FILTRO Y CARPETAS VIRTUALES CON TEXTO RESUMIDO
+# HERRAMIENTA 1: FILTRO, CARPETAS VIRTUALES Y ELIMINACIÓN
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_VISION = """
 Eres un auditor técnico ambiental experto en inspección de sitios contaminados por derrames de hidrocarburos en México.
@@ -300,6 +314,12 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                             st.image(img_data, use_container_width=True)
                             st.caption(f"📄 Archivo: {item['nombre']}")
                             st.info(f"🏷️ *{item['pie']}*")
+                            
+                            # --- NUEVO: BOTÓN DE ELIMINAR FOTO ---
+                            if st.button("🗑️ Eliminar Foto", key=f"btn_del_{item['id_foto']}", type="secondary", use_container_width=True):
+                                if eliminar_foto_db(item["id_foto"]):
+                                    st.toast("Foto eliminada correctamente.")
+                                    st.rerun()
 
 
 # (Mantenemos el resto de los módulos estables)
@@ -364,7 +384,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🔎 Auditor de Machotes", "🧪 Vaciado de Laboratorio", "📝 Generador Cap. 5"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n📜 NOM-138-SEMARNAT/SSA1-2012  \n**v1.4.1 (Resumen Corto)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n📜 NOM-138-SEMARNAT/SSA1-2012  \n**v1.4.2 (Con Eliminación)**")
     return herramienta
 
 def check_password() -> bool:
