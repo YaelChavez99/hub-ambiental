@@ -43,8 +43,8 @@ NOM_138_MATRIZ: dict[str, dict[str, float]] = {
 }
 
 MAX_CHARS_POR_CHUNK = 80_000
-MAX_PAGINAS_VISION  = 20
-VISION_DPI          = 150
+MAX_PAGINAS_VISION  = 5    # 413 si se envían más de ~5 páginas PNG por llamada
+VISION_DPI          = 100  # 100 dpi es suficiente para leer tablas; 150 excede el límite
 
 # ---------------------------------------------------------------------------
 # BASE DE DATOS EN LA NUBE (PostgreSQL)
@@ -190,18 +190,23 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
 # Renderizado de PDF a imágenes para modo Vision
 # ---------------------------------------------------------------------------
 def pdf_a_imagenes_b64(pdf_bytes: bytes, dpi: int = VISION_DPI) -> list[str]:
-    """Renderiza cada página del PDF como PNG base64. Excluye cromatogramas por proporción."""
+    """
+    Renderiza cada página del PDF como JPEG base64.
+    JPEG en lugar de PNG reduce el peso ~5x, evitando error 413.
+    Excluye páginas tipo cromatograma (proporción altura/ancho > 3.5).
+    """
     imagenes: list[str] = []
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     matrix = fitz.Matrix(dpi / 72, dpi / 72)
     for page in doc:
         rect = page.rect
         ratio = rect.height / max(rect.width, 1)
-        if ratio > 3.5:  # página tipo cromatograma (muy alta y angosta)
+        if ratio > 3.5:  # cromatograma
             continue
         pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csRGB)
-        png_bytes = pix.tobytes("png")
-        imagenes.append(base64.b64encode(png_bytes).decode("utf-8"))
+        # Convertir a JPEG con calidad 85 (mucho más liviano que PNG)
+        jpeg_bytes = pix.tobytes("jpeg", jpg_quality=85)
+        imagenes.append(base64.b64encode(jpeg_bytes).decode("utf-8"))
     doc.close()
     return imagenes
 
@@ -276,7 +281,7 @@ def _llamar_claude_lab_vision(client: anthropic.Anthropic, imagenes_b64: list[st
         return []
     content: list[dict] = []
     for b64 in imagenes_b64:
-        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
     content.append({"type": "text", "text": (
         "Estas imágenes son páginas de un reporte analítico de laboratorio de suelos.\n"
         "Efectúa el vaciado cruzado de TODAS las muestras en las tablas.\n"
