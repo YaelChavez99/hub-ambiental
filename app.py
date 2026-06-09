@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 3.5 Sonnet (Entorno Corporativo Protegido).
 
-Versión: 1.9.5 (Filtro por Exclusión Quirúrgica de Cromatogramas y Parser Directo)
+Versión: 1.9.6 (Ampliación Definitiva a 8K Tokens de Salida - Anti-Truncado JSON)
 """
 
 from __future__ import annotations
@@ -191,7 +191,7 @@ def cargar_laboratorio_proyecto(id_proyecto: str) -> list[dict]:
     except Exception: return []
 
 # ---------------------------------------------------------------------------
-# Helpers de Normalización y Filtro de PDF
+# Helpers de Normalización y Filtro Inteligente de PDF
 # ---------------------------------------------------------------------------
 def safe_float(val: Any) -> float:
     try:
@@ -201,14 +201,14 @@ def safe_float(val: Any) -> float:
     except Exception: return 0.0
 
 def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Filtra de raíz los cromatogramas instrumentales repetitivos para ahorrar memoria."""
+    """Filtra el documento eliminando el ruido técnico de los equipos de medición."""
     text_parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
             text_upper = text.upper()
-            # Si contiene ruido del equipo TRACE o cromatogramas de área, lo saltamos por completo
-            if "TRACE 1310" in text_upper or "INTENSITY" in text_upper or "RT(MIN)" in text_upper or "TRACEFINDER" in text_upper:
+            # Filtramos agresivamente las páginas instrumentales de cromatogramas analíticos
+            if "TRACE 1310" in text_upper or "AUTOMUESTREADOR" in text_upper or "TRACEFINDER" in text_upper or "INTENSITY" in text_upper or "RT(MIN)" in text_upper:
                 continue
             text_parts.append(f"\n--- PÁGINA {i} ---\n{text}")
     return "\n".join(text_parts)
@@ -229,7 +229,7 @@ Debes elegir OBLIGATORIAMENTE una de estas categorías operativas:
 
 Escribe una descripción resumida y general de máximo 15 palabras.
 
-Devuelve EXCLUSIVAMENTE un objeto JSON sin marcas markdown adicionales:
+Devuelve EXCLUSIVAMENTE un objeto JSON sin marcas markdown:
 {
   "clasificacion": "Evidencia del Siniestro" | "Excavaciones" | "Sondeos y Muestreo" | "Evidencias de Remediación" | "INSERVIBLE",
   "pie_de_foto": "Descripción resumida (máx 15 palabras)"
@@ -283,7 +283,7 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                                 if eliminar_foto_db(item["id_foto"]): st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 3: VACIADO INTEGRAL DIRECTO (NOM-138 EXTRACTOR)
+# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO (8K TOKENS ACTIVADOS)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_LAB = """
 Eres un auditor analítico pericial experto en reportes de laboratorios de suelos contaminados (Novalabsa/LABSA) en México conforme a la NOM-138-SEMARNAT/SSA1-2012.
@@ -313,20 +313,21 @@ Genera obligatoriamente la lista completa de todas las muestras encontradas en e
 """
 
 def analizar_reporte_laboratorio(client: anthropic.Anthropic, texto_pdf: str) -> list[dict]:
+    # 🔥 SOLUCIÓN REAL: Cambiado de 4096 a 8192 max_tokens para dar soporte completo a las 38 celdas masivas
     message = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=4096, system=SYSTEM_PROMPT_LAB,
-        messages=[{"role": "user", "content": f"Efectúa el vaciado cruzado analítico de todo el documento:\n\n{texto_pdf}"}]
+        model="claude-sonnet-4-6", max_tokens=8192, system=SYSTEM_PROMPT_LAB,
+        messages=[{"role": "user", "content": f"Efectúa el vaciado cruzado analítico completo del documento:\n\n{texto_pdf}"}]
     )
     text_content = message.content[0].text.strip()
     match = re.search(r'\[\s*\{.*\}\s*\]', text_content, re.DOTALL)
     raw = match.group(0) if match else text_content
-    raw = re.sub(r',\s*([\]}])', r'\1', raw)  # Reparación de comas terminales huérfanas
+    raw = re.sub(r',\s*([\]}])', r'\1', raw)
     try: return json.loads(raw)
     except Exception: return []
 
 def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     st.header("🧪 Herramienta 3 — Vaciado Automático de Laboratorio")
-    if not st.session_state.proyecto_actual: st.warning("⚠️ Selecciona un proyecto en la barra lateral."); return
+    if not st.session_state.proyecto_actual: st.warning("⚠️ Selecciona un proyecto."); return
 
     detalles = obtener_detalles_proyecto(st.session_state.proyecto_actual)
     uso_suelo = detalles["uso_de_suelo"] if detalles else "Agrícola/Forestal"
@@ -339,8 +340,8 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     st.markdown("---")
 
     uploaded_pdf = st.file_uploader("Sube el PDF analítico integral de Novalabsa", type=["pdf"])
-    if uploaded_pdf and st.button("🔍 Iniciar Extracción Cruzada", type="primary"):
-        with st.spinner("Filtrando cromatogramas instrumentales y compilando el vaciado de muestras en Neon…"):
+    if uploaded_pdf and st.button("🔍 Iniciar Extracción Corporativa", type="primary"):
+        with st.spinner("Procesando analíticos y cruzando datos de campo en Neon Nube…"):
             texto = extract_pdf_text(uploaded_pdf.read())
             muestras_extraidas = analizar_reporte_laboratorio(client, texto)
 
@@ -377,7 +378,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                     guardar_muestra_db(st.session_state.proyecto_actual, id_orig, zona, profundidad, x, y, json_res, rebase=rebo)
                 except Exception: pass
 
-            st.success("¡Muestras extraídas y archivadas de forma permanente!"); st.rerun()
+            st.success("¡Muestras extraídas y enlazadas con éxito en Neon!"); st.rerun()
 
     historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual)
     if historial:
@@ -397,7 +398,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         st.dataframe(df.style.applymap(lambda v: 'background-color: #ffcccc; color: #cc0000; font-weight: bold;' if v == "🚨 EXCEDE" else '', subset=['Evaluación NOM-138']), use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# CORE LOGÍSTICO API Y RENDERS
+# CORE LOGÍSTICO API
 # ---------------------------------------------------------------------------
 def get_client() -> anthropic.Anthropic:
     try: api_key = st.secrets["ANTHROPIC_API_KEY"]
