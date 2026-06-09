@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.9.0 (Arquitectura de Procesamiento Dividido - Anti-Truncado JSON)
+Versión: 1.9.1 (Parche Crítico: Restauración de get_client para API Anthropic)
 """
 
 from __future__ import annotations
@@ -191,8 +191,19 @@ def cargar_laboratorio_proyecto(id_proyecto: str) -> list[dict]:
     except Exception: return []
 
 # ---------------------------------------------------------------------------
-# Helpers de Normalización y Filtro Inteligente Segmentado
+# Helpers de Conexión API e Inteligencia Analítica Segmentada
 # ---------------------------------------------------------------------------
+def get_client() -> anthropic.Anthropic:
+    """Genera el cliente Anthropic de forma segura leyendo las variables de entorno."""
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.error("⚠️ No se encontró la clave de API de Anthropic (ANTHROPIC_API_KEY) en los Secrets.")
+        st.stop()
+    return anthropic.Anthropic(api_key=api_key)
+
 def normalizar_id_muestra(texto: str) -> str:
     if not texto: return ""
     return re.sub(r'[\s\.\-_]', '', str(texto)).upper()
@@ -205,27 +216,22 @@ def safe_float(val: Any) -> float:
     except Exception: return 0.0
 
 def segmentar_reporte_pdf(pdf_bytes: bytes) -> tuple[str, str]:
-    """Separa el PDF en dos hilos limpios omitiendo los cromatogramas instrumentales."""
     texto_quimico = []
     texto_campo = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
             text_upper = text.upper()
-            
-            # Descarte absoluto de ruido gráfico
             if "TRACE 1310" in text_upper or "INTENSITY" in text_upper or "RT(MIN)" in text_upper or "TRACEFINDER" in text_upper:
                 continue
-                
             if "CADENA DE CUSTODIA" in text_upper or "FORMATO DE CAMPO" in text_upper or "PLAN DE MUESTREO" in text_upper:
                 texto_campo.append(f"\n--- PÁG {i} ---\n{text}")
             elif "IDENTIFICACIÓN" in text_upper or "L.M.P." in text_upper or "PARÁMETRO" in text_upper:
                 texto_quimico.append(f"\n--- PÁG {i} ---\n{text}")
-                
     return "\n".join(texto_quimico), "\n".join(texto_campo)
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 1: FILTRO DE FOTOGRAFÍAS (CON CARPETAS TOTALMENTE CONFIGURADAS)
+# HERRAMIENTA 1: FILTRO DE FOTOGRAFÍAS
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_VISION = """
 Eres un auditor técnico ambiental experto en inspección de sitios contaminados por derrames de hidrocarburos en México.
@@ -294,7 +300,7 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                                 if eliminar_foto_db(item["id_foto"]): st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 3: PIPELINE DE TRABAJO SEPARADO (BITE-SIZED EXTRACTION Prompts)
+# HERRAMIENTA 3: PIPELINE DE TRABAJO SEPARADO
 # ---------------------------------------------------------------------------
 PROMPT_EXTRAER_QUIMICOS = """
 Eres un extractor analítico pericial de laboratorios químicos. Tu única tarea es extraer los resultados analíticos puros de cada muestra de suelo.
@@ -342,7 +348,7 @@ def consultar_ia_parser(client: anthropic.Anthropic, prompt_sistema: str, texto_
     text_content = message.content[0].text.strip()
     match = re.search(r'\[\s*\{.*\}\s*\]', text_content, re.DOTALL)
     raw = match.group(0) if match else text_content
-    raw = re.sub(r',\s*([\]}])', r'\1', raw) # Limpieza de comas terminales
+    raw = re.sub(r',\s*([\]}])', r'\1', raw)
     try: return json.loads(raw)
     except Exception: return []
 
@@ -364,8 +370,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     if uploaded_pdf and st.button("🔍 Iniciar Extracción Corporativa", type="primary"):
         with st.spinner("Paso 1/2: Segmentando PDF y parseando analíticos químicos…"):
             texto_q, texto_c = segmentar_reporte_pdf(uploaded_pdf.read())
-            
-            # Extracción del bloque químico
             lista_analiticos = consultar_ia_parser(client, PROMPT_EXTRAER_QUIMICOS, texto_q)
             
         if not lista_analiticos:
@@ -373,10 +377,8 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             return
 
         with st.spinner("Paso 2/2: Extrayendo mapeo de Cadenas de Custodia y Formatos de Campo…"):
-            # Extracción del bloque geográfico
             lista_campo = consultar_ia_parser(client, PROMPT_EXTRAER_CAMPO, texto_c)
 
-        # Mapeo determinístico por software en Python (Seguro, rápido y sin límite de tokens)
         mapa_campo = {}
         for row_c in lista_campo:
             id_norm = normalizar_id_muestra(row_c.get("id_muestra", ""))
@@ -386,7 +388,6 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             id_orig = row_a.get("id_muestra", "")
             id_norm = normalizar_id_muestra(id_orig)
             
-            # Cruzamos los datos de campo correspondientes usando Pandas-logic manual
             datos_c = mapa_campo.get(id_norm, {})
             zona = datos_c.get("zona", "Campo")
             profundidad = datos_c.get("profundidad", "0.0")
@@ -413,8 +414,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
 
             guardar_muestra_db(st.session_state.proyecto_actual, id_orig, zona, profundidad, x, y, json_res, rebo)
 
-        st.success("¡Muestras extraídas y enlazadas con éxito en Neon!")
-        st.rerun()
+        st.success("¡Muestras extraídas y enlazadas con éxito en Neon!"); st.rerun()
 
     historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual)
     if historial:
@@ -434,7 +434,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         st.dataframe(df.style.applymap(lambda v: 'background-color: #ffcccc; color: #cc0000; font-weight: bold;' if v == "🚨 EXCEDE" else '', subset=['Evaluación NOM-138']), use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# LOGÍSTICA DE CORE Y SIDEBAR
+# MENÚ LATERAL Y CONTROL DE ACCESO
 # ---------------------------------------------------------------------------
 def render_sidebar() -> str:
     with st.sidebar:
@@ -460,7 +460,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🧪 Vaciado de Laboratorio"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.9.0 (Arquitectura Segmentada)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.8.2 (Estable)**")
     return herramienta
 
 def check_password() -> bool:
