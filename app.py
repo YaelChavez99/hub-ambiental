@@ -315,8 +315,25 @@ def analizar_reporte_laboratorio(client: anthropic.Anthropic, pdf_bytes: bytes) 
             if id_m and id_m not in ids_vistos:
                 todas.append(m); ids_vistos.add(id_m)
 
+    def texto_tiene_datos_analiticos(t: str) -> bool:
+        """
+        Verifica que el texto extraído contenga realmente datos analíticos.
+        Un PDF de 10MB con solo 679 chars es escaneado aunque técnicamente tenga 'texto'.
+        Busca patrones típicos de reportes: IDs de muestra (P1, P2...), valores numéricos
+        decimales, o palabras clave de cabecera de tabla.
+        """
+        t_upper = t.upper()
+        # Palabras clave que aparecen en tablas analíticas reales
+        keywords = ["HFL", "BENCENO", "TOLUENO", "PROFUNDIDAD", "COORDENADA",
+                    "ZONA", "L.C.", "MG/KG", "MUESTRA"]
+        hits = sum(1 for kw in keywords if kw in t_upper)
+        # Patrones numéricos de coordenadas o valores analíticos (ej: 250,037.32 o 1876.25)
+        num_matches = len(re.findall(r'\d{3,}[\.,]\d{2,}', t))
+        # Necesitamos al menos 3 keywords Y al menos 5 números para considerar texto válido
+        return hits >= 3 and num_matches >= 5
+
     # ── MODO TEXTO ──────────────────────────────────────────────────────────
-    if chars_utiles > 500:
+    if chars_utiles > 500 and texto_tiene_datos_analiticos(texto):
         st.info("📄 Modo texto: PDF con capa de texto detectada.")
         if len(texto) <= MAX_CHARS_POR_CHUNK:
             acumular(_llamar_claude_lab_texto(client, texto))
@@ -337,9 +354,12 @@ def analizar_reporte_laboratorio(client: anthropic.Anthropic, pdf_bytes: bytes) 
                 antes = len(todas); acumular(_llamar_claude_lab_texto(client, chunk))
                 st.caption(f"   ↳ {len(todas)-antes} muestra(s) nueva(s).")
 
-    # ── MODO VISIÓN (PDF escaneado) ─────────────────────────────────────────
+    # ── MODO VISIÓN (PDF escaneado o tablas como imagen) ───────────────────
     else:
-        st.info("🖼️ PDF escaneado detectado. Renderizando páginas como imágenes…")
+        if chars_utiles > 500:
+            st.info("🖼️ Texto extraído insuficiente para analíticos (tablas embebidas como imagen). Cambiando a modo visión…")
+        else:
+            st.info("🖼️ PDF escaneado detectado. Renderizando páginas como imágenes…")
         imagenes = pdf_a_imagenes_b64(pdf_bytes, dpi=VISION_DPI)
         total_imgs = len(imagenes)
         st.caption(f"📸 {total_imgs} página(s) a procesar.")
