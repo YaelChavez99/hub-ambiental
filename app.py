@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.7.3 (Resolución de Truncado JSON y Recuperación de Prompt de Visión)
+Versión: 1.7.4 (Filtro por Exclusión y Reparador de Estructuras JSON)
 """
 
 from __future__ import annotations
@@ -191,7 +191,7 @@ def cargar_laboratorio_proyecto(id_proyecto: str) -> list[dict]:
     except Exception: return []
 
 # ---------------------------------------------------------------------------
-# Helpers de API y Filtro Quirúrgico de PDF
+# Helpers de API y Filtro Quirúrgico Exclusivo de PDF
 # ---------------------------------------------------------------------------
 def get_client() -> anthropic.Anthropic:
     try: api_key = st.secrets["ANTHROPIC_API_KEY"]
@@ -210,37 +210,42 @@ def resize_image_if_needed(image_bytes: bytes, max_px: int = 1_500) -> bytes:
     return buf.getvalue()
 
 def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Filtra el documento manteniendo exclusivamente las páginas clave para ahorrar contexto."""
+    """Filtra agresivamente el PDF descartando las páginas de ruido instrumental."""
     text_parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
             text_upper = text.upper()
-            # Dejamos pasar solo las hojas analíticas, cadenas de custodia y formatos de campo, eliminando los cromatogramas basura
-            if "IDENTIFICACIÓN DE MUESTRA" in text_upper or "CADENA DE CUSTODIA" in text_upper or "FORMATO DE CAMPO" in text_upper or "ZONA AFECTADA" in text_upper:
+            
+            # 🚫 FILTRO EXCLUSIVO CRÍTICO: Si la página es un cromatograma o reporte de máquina, se descarta por completo
+            if "TRACE 1310" in text_upper or "INTENSITY" in text_upper or "RT(MIN)" in text_upper or "TRACEFINDER" in text_upper:
+                continue
+                
+            # Solo guardamos hojas analíticas verdaderas, cadenas de custodia y formatos de campo
+            if "IDENTIFICACIÓN" in text_upper or "CADENA DE CUSTODIA" in text_upper or "FORMATO DE CAMPO" in text_upper or "L.M.P." in text_upper:
                 text_parts.append(f"\n--- PÁGINA {i} ---\n{text}")
     return "\n".join(text_parts)
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 1: FILTRO DE FOTOGRAFÍAS (PROMPT RESTAURADO)
+# HERRAMIENTA 1: FILTRO DE FOTOGRAFÍAS (BLINDADO)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_VISION = """
 Eres un auditor técnico ambiental experto en inspección de sitios contaminados por derrames de hidrocarburos en México.
 Tu tarea es analizar fotografías tomadas en campo y clasificarlas con estricto rigor técnico.
 
-Para CADA fotografía, debes evaluar a cuál categoría operativa pertenece:
-- "Evidencia del Siniestro": Muestra vehículos accidentados, la zona del impacto inicial, suelo impregnado crudo, etc.
-- "Excavaciones": Muestra el avance del retiro de suelo, cortes de tierra, uso de maquinaria pesada retirando capas.
-- "Sondeos y Muestreo": Muestra pozos a cielo abierto, barrenos, personal tomando muestras con palas o tubos core, etiquetado de frascos.
-- "Evidencias de Remediación": Muestra aplicación de bacterias, volteo de biopilas, adición de nutrientes o membranas.
-- "INSERVIBLE": Imágenes borrosas, dedos tapando el lente, fotos de la oficina o minutas impresas.
+Clasifica la imagen únicamente en una de estas categorías fijas:
+- "Evidencia del Siniestro"
+- "Excavaciones"
+- "Sondeos y Muestreo"
+- "Evidencias de Remediación"
+- "INSERVIBLE"
 
-Escribe una descripción de la fotografía que sea sumamente resumida, clara y general (máximo 15 palabras).
+Escribe una descripción resumida y general de máximo 15 palabras.
 
-Devuelve EXCLUSIVAMENTE un objeto JSON (sin texto explicativo externo):
+Devuelve EXCLUSIVAMENTE un objeto JSON sin marcas markdown adicionales:
 {
   "clasificacion": "Evidencia del Siniestro" | "Excavaciones" | "Sondeos y Muestreo" | "Evidencias de Remediación" | "INSERVIBLE",
-  "pie_de_foto": "Descripción resumida (máx 15 palabras)" | null
+  "pie_de_foto": "Descripción resumida (máx 15 palabras)"
 }
 """
 
@@ -248,11 +253,13 @@ def analizar_fotografia(client: anthropic.Anthropic, image_bytes: bytes, media_t
     b64 = image_to_b64(image_bytes)
     message = client.messages.create(
         model="claude-sonnet-4-6", max_tokens=512, system=SYSTEM_PROMPT_VISION,
-        messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}, {"type": "text", "text": "Clasifica y analiza esta imagen de campo."}]}]
+        messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}, {"type": "text", "text": "Clasifica esta imagen."}]}]
     )
-    raw = re.sub(r"```json|```", "", message.content[0].text.strip()).strip()
+    text_content = message.content[0].text.strip()
+    match = re.search(r'\{.*\}', text_content, re.DOTALL)
+    raw = match.group(0) if match else text_content
     try: return json.loads(raw)
-    except Exception: return {"clasificacion": "INSERVIBLE", "pie_de_foto": None}
+    except Exception: return {"clasificacion": "INSERVIBLE", "pie_de_foto": "Evidencia fotográfica."}
 
 def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
     st.header("📷 Herramienta 1 — Filtro y Archivo Organizado de Evidencias")
@@ -270,7 +277,7 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                 if res.get("clasificacion") != "INSERVIBLE":
                     guardar_foto_db(st.session_state.proyecto_actual, res["clasificacion"], res.get("pie_de_foto", "Evidencia."), uf.name, processed)
                 progress.progress((idx + 1) / total)
-            st.success("¡Fotos organizadas en sus carpetas!"); st.rerun()
+            st.success("¡Fotos organizadas con éxito!"); st.rerun()
 
     fotos = cargar_fotos_proyecto(st.session_state.proyecto_actual)
     for cap in ["Evidencia del Siniestro", "Excavaciones", "Sondeos y Muestreo", "Evidencias de Remediación"]:
@@ -289,17 +296,17 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                                 if eliminar_foto_db(item["id_foto"]): st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO (HEADROOM AMPLIADO)
+# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO (8K TOKENS + PARSER ROBUSTO)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_LAB = """
 Eres un auditor analítico pericial experto en reportes de laboratorios de suelos contaminados (Novalabsa/LABSA) en México conforme a la NOM-138-SEMARNAT/SSA1-2012.
-Tu objetivo es realizar una extracción cruzada exacta unificando la información de las hojas químicas con los anexos operativos mediante el ID de la muestra:
+Tu objetivo es realizar una extracción cruzada exacta de las 38 muestras acoplando las hojas químicas con los anexos operativos mediante el ID de la muestra como llave común:
 
 1) HOJAS DE ANALÍTICOS: Extrae los parámetros (HFL, Benceno, Tolueno, Etilbenceno, Xilenos, pH y Humedad). Valores '< L.C.' o 'ND' equivalen a 0.0.
-2) HOJA DE CADENA DE CUSTODIA: Extrae de forma estricta los datos correspondientes: "Identificación de la muestra" (ID), la "Zona" afectada y la "Profundidad".
+2) HOJA DE CADENA DE CUSTODIA: Extrae estrictamente los datos operativos: "Identificación de la muestra" (ID), la "Zona" afectada y la "Profundidad".
 3) HOJA DE FORMATO DE CAMPO: Extrae de manera obligatoria las coordenadas GPS (UTM) "Metros Este" (Coordenada X) y "Metros Norte" (Coordenada Y) correspondientes a cada ID de muestra.
 
-Devuelve exclusivamente un arreglo JSON válido sin texto explicativo externo:
+Devuelve exclusivamente un arreglo JSON válido (asegúrate de cerrar correctamente corchetes y llaves). No incluyas texto explicativo externo:
 [
   {
     "id_muestra": "ID exacto (ej: P1 0.6)",
@@ -319,14 +326,19 @@ Devuelve exclusivamente un arreglo JSON válido sin texto explicativo externo:
 """
 
 def analizar_reporte_laboratorio(client: anthropic.Anthropic, texto_pdf: str) -> list[dict]:
-    # Elevamos max_tokens a 8,192 para que entren todas las filas sin truncado JSON
     message = client.messages.create(
         model="claude-sonnet-4-6", max_tokens=8192, system=SYSTEM_PROMPT_LAB,
-        messages=[{"role": "user", "content": f"Ejecuta el vaciado completo de las 38 muestras:\n\n{texto_pdf}"}]
+        messages=[{"role": "user", "content": f"Efectúa el vaciado cruzado de las muestras utilizando el siguiente texto depurado:\n\n{texto_pdf}"}]
     )
     text_content = message.content[0].text.strip()
-    match = re.search(r'\[.*\]', text_content, re.DOTALL)
+    
+    # Extraemos limpiamente el bloque del arreglo JSON aislando chat de la IA
+    match = re.search(r'\[\s*\{.*\}\s*\]', text_content, re.DOTALL)
     raw = match.group(0) if match else text_content
+    
+    # 🔥 REPARADOR DE EMERGENCIA: Elimina comas huérfanas terminales (trailing commas) que rompen json.loads en Python
+    raw = re.sub(r',\s*([\]}])', r'\1', raw)
+    
     try: return json.loads(raw)
     except Exception: return []
 
@@ -346,7 +358,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
 
     uploaded_pdf = st.file_uploader("Sube el PDF analítico integral", type=["pdf"])
     if uploaded_pdf and st.button("🔍 Iniciar Extracción Cruzada", type="primary"):
-        with st.spinner("Filtrando cromatogramas y procesando el mapeo completo de muestras en la nube…"):
+        with st.spinner("Filtrando cromatogramas instrumentales y compilando el mapeo completo de muestras en Neon…"):
             texto = extract_pdf_text(uploaded_pdf.read())
             muestras_extraidas = analizar_reporte_laboratorio(client, texto)
 
@@ -376,7 +388,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                         json_res, rebo
                     )
                 except Exception: pass
-            st.success("¡Vaciado completo guardado de forma permanente!")
+            st.success("¡Vaciado analítico completo guardado con éxito!")
             st.rerun()
 
     historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual)
@@ -423,7 +435,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🧪 Vaciado de Laboratorio"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.7.3 (Blindaje Total)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.7.4 (Filtro por Exclusión)**")
     return herramienta
 
 def check_password() -> bool:
