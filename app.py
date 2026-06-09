@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.8.0 (Filtro Relacional Optimizada contra Truncado JSON en PostgreSQL)
+Versión: 1.8.1 (Corrección de NameError e Imports del Cliente Anthropic)
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import anthropic
+import anthropic  # ¡Regresó el import faltante!
 import fitz  # PyMuPDF
 import pandas as pd
 import pdfplumber
@@ -194,7 +194,6 @@ def cargar_laboratorio_proyecto(id_proyecto: str) -> list[dict]:
 # Helpers de Normalización y Filtro de PDF
 # ---------------------------------------------------------------------------
 def normalizar_id_muestra(texto: str) -> str:
-    """Remueve espacios, puntos y guiones para emparejar IDs inconsistentes (ej: P1 0.6 -> P106)."""
     if not texto: return ""
     return re.sub(r'[\s\.\-_]', '', str(texto)).upper()
 
@@ -206,8 +205,20 @@ def safe_float(val: Any) -> float:
     except Exception:
         return 0.0
 
+def image_to_b64(image_bytes: bytes) -> str:
+    return base64.b64encode(image_bytes).decode("utf-8")
+
+def resize_image_if_needed(image_bytes: bytes, max_px: int = 1_500) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    w, h = img.size
+    if max(w, h) > max_px:
+        ratio = max_px / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
 def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Filtra agresivamente el PDF descartando las páginas de ruido instrumental."""
     text_parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
@@ -268,7 +279,6 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                 except Exception: processed = raw_bytes
                 res = analizar_fotografia(client, processed, "image/jpeg")
                 
-                # Se archiva todo de manera incluyente para dar feedback visual directo
                 guardar_foto_db(st.session_state.proyecto_actual, res.get("clasificacion", "Evidencia del Siniestro"), res.get("pie_de_foto", "Fotografía del sitio."), uf.name, processed)
                 progress.progress((idx + 1) / total)
             st.success("¡Fotos organizadas con éxito!"); st.rerun()
@@ -292,7 +302,7 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                                 if eliminar_foto_db(item["id_foto"]): st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO (ESTRATEGIA PARALELA RELACIONAL)
+# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_LAB = """
 Eres un analizador pericial de reportes de laboratorios ambientales. Tu tarea es extraer los datos en dos bloques independientes estructurados en JSON.
@@ -348,7 +358,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     uso_suelo = detalles["uso_de_suelo"] if detalles else "Agrícola/Forestal"
     limites_vigentes = NOM_138_MATRIZ[uso_suelo]
 
-    st.subheader(f"📋 Criterio Regulatorio: `NOM-138 ({uso_suelo})`")
+    st.subheader(f"📋 Criterio Regulario: `NOM-138 ({uso_suelo})`")
     cols_l = st.columns(5)
     for col, (param, val) in zip(cols_l, limites_vigentes.items()):
         col.metric(f"LMP {param}", f"{val} mg/kg")
@@ -367,14 +377,11 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                 st.error("Error al estructurar los datos del reporte. El volumen de celdas excedió el parseo inicial.")
                 return
 
-            # Indexamos los datos georreferenciados en un mapa usando el ID normalizado
             mapa_campo = {}
             for row_c in lista_campo:
                 id_norm = normalizar_id_muestra(row_c.get("id_muestra", ""))
-                if id_norm:
-                    mapa_campo[id_norm] = row_c
+                if id_norm: mapa_campo[id_norm] = row_c
 
-            # Realizamos el cruce determinístico por software en Python
             for row_a in lista_analiticos:
                 id_orig = row_a.get("id_muestra", "")
                 id_norm = normalizar_id_muestra(id_orig)
@@ -429,8 +436,14 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         st.dataframe(df.style.applymap(lambda v: 'background-color: #ffcccc; color: #cc0000; font-weight: bold;' if v == "🚨 EXCEDE" else '', subset=['Evaluación NOM-138']), use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# SIDEBAR Y MAIN NATIVO
+# CORE LOGÍSTICO API
 # ---------------------------------------------------------------------------
+def get_client() -> anthropic.Anthropic:
+    try: api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except (KeyError, FileNotFoundError): api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key: st.error("⚠️ Falta ANTHROPIC_API_KEY."); st.stop()
+    return anthropic.Anthropic(api_key=api_key)
+
 def render_sidebar() -> str:
     with st.sidebar:
         st.markdown("## 🌿 Hub Ambiental")
@@ -455,7 +468,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🧪 Vaciado de Laboratorio"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.8.0 (Pipeline Relacional)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.8.1 (Fijado Completo)**")
     return herramienta
 
 def check_password() -> bool:
