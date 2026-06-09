@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.8.1 (Corrección de NameError e Imports del Cliente Anthropic)
+Versión: 1.9.0 (Arquitectura de Procesamiento Dividido - Anti-Truncado JSON)
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import anthropic  # ¡Regresó el import faltante!
+import anthropic
 import fitz  # PyMuPDF
 import pandas as pd
 import pdfplumber
@@ -191,7 +191,7 @@ def cargar_laboratorio_proyecto(id_proyecto: str) -> list[dict]:
     except Exception: return []
 
 # ---------------------------------------------------------------------------
-# Helpers de Normalización y Filtro de PDF
+# Helpers de Normalización y Filtro Inteligente Segmentado
 # ---------------------------------------------------------------------------
 def normalizar_id_muestra(texto: str) -> str:
     if not texto: return ""
@@ -202,41 +202,36 @@ def safe_float(val: Any) -> float:
         if isinstance(val, str):
             val = val.replace(",", "").strip()
         return float(val)
-    except Exception:
-        return 0.0
+    except Exception: return 0.0
 
-def image_to_b64(image_bytes: bytes) -> str:
-    return base64.b64encode(image_bytes).decode("utf-8")
-
-def resize_image_if_needed(image_bytes: bytes, max_px: int = 1_500) -> bytes:
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    w, h = img.size
-    if max(w, h) > max_px:
-        ratio = max_px / max(w, h)
-        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
-    return buf.getvalue()
-
-def extract_pdf_text(pdf_bytes: bytes) -> str:
-    text_parts: list[str] = []
+def segmentar_reporte_pdf(pdf_bytes: bytes) -> tuple[str, str]:
+    """Separa el PDF en dos hilos limpios omitiendo los cromatogramas instrumentales."""
+    texto_quimico = []
+    texto_campo = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
             text_upper = text.upper()
+            
+            # Descarte absoluto de ruido gráfico
             if "TRACE 1310" in text_upper or "INTENSITY" in text_upper or "RT(MIN)" in text_upper or "TRACEFINDER" in text_upper:
                 continue
-            text_parts.append(f"\n--- PÁGINA {i} ---\n{text}")
-    return "\n".join(text_parts)
+                
+            if "CADENA DE CUSTODIA" in text_upper or "FORMATO DE CAMPO" in text_upper or "PLAN DE MUESTREO" in text_upper:
+                texto_campo.append(f"\n--- PÁG {i} ---\n{text}")
+            elif "IDENTIFICACIÓN" in text_upper or "L.M.P." in text_upper or "PARÁMETRO" in text_upper:
+                texto_quimico.append(f"\n--- PÁG {i} ---\n{text}")
+                
+    return "\n".join(texto_quimico), "\n".join(texto_campo)
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 1: FILTRO DE FOTOGRAFÍAS
+# HERRAMIENTA 1: FILTRO DE FOTOGRAFÍAS (CON CARPETAS TOTALMENTE CONFIGURADAS)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_VISION = """
 Eres un auditor técnico ambiental experto en inspección de sitios contaminados por derrames de hidrocarburos en México.
 Tu tarea es analizar fotografías tomadas en campo y clasificarlas con estricto rigor técnico.
 
-Clasifica la imagen únicamente en una de estas categorías fijas:
+Debes elegir OBLIGATORIAMENTE una de estas categorías operativas:
 - "Evidencia del Siniestro"
 - "Excavaciones"
 - "Sondeos y Muestreo"
@@ -245,7 +240,7 @@ Clasifica la imagen únicamente en una de estas categorías fijas:
 
 Escribe una descripción resumida y general de máximo 15 palabras.
 
-Devuelve EXCLUSIVAMENTE un objeto JSON sin marcas markdown adicionales:
+Devuelve EXCLUSIVAMENTE un objeto JSON sin marcas markdown:
 {
   "clasificacion": "Evidencia del Siniestro" | "Excavaciones" | "Sondeos y Muestreo" | "Evidencias de Remediación" | "INSERVIBLE",
   "pie_de_foto": "Descripción resumida (máx 15 palabras)"
@@ -253,7 +248,7 @@ Devuelve EXCLUSIVAMENTE un objeto JSON sin marcas markdown adicionales:
 """
 
 def analizar_fotografia(client: anthropic.Anthropic, image_bytes: bytes, media_type: str) -> dict:
-    b64 = image_to_b64(image_bytes)
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
     message = client.messages.create(
         model="claude-sonnet-4-6", max_tokens=512, system=SYSTEM_PROMPT_VISION,
         messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}, {"type": "text", "text": "Clasifica esta imagen."}]}]
@@ -271,17 +266,14 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
     with st.expander("➕ Subir Fotografías al Expediente", expanded=True):
         uploaded_files = st.file_uploader("Selecciona imágenes de campo", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
         if uploaded_files and st.button("🚀 Procesar Imágenes", type="primary"):
-            progress = st.progress(0, text="Clasificando evidencias fotográficas…")
+            progress = st.progress(0, text="Organizando evidencias con Claude…")
             total = len(uploaded_files)
             for idx, uf in enumerate(uploaded_files):
                 raw_bytes = uf.read()
-                try: processed = resize_image_if_needed(raw_bytes)
-                except Exception: processed = raw_bytes
-                res = analizar_fotografia(client, processed, "image/jpeg")
-                
-                guardar_foto_db(st.session_state.proyecto_actual, res.get("clasificacion", "Evidencia del Siniestro"), res.get("pie_de_foto", "Fotografía del sitio."), uf.name, processed)
+                res = analizar_fotografia(client, raw_bytes, "image/jpeg")
+                guardar_foto_db(st.session_state.proyecto_actual, res.get("clasificacion", "Evidencia del Siniestro"), res.get("pie_de_foto", "Fotografía del sitio."), uf.name, raw_bytes)
                 progress.progress((idx + 1) / total)
-            st.success("¡Fotos organizadas con éxito!"); st.rerun()
+            st.success("¡Fotos guardadas de forma permanente!"); st.rerun()
 
     fotos = cargar_fotos_proyecto(st.session_state.proyecto_actual)
     carpetas = ["Evidencia del Siniestro", "Excavaciones", "Sondeos y Muestreo", "Evidencias de Remediación", "INSERVIBLE"]
@@ -302,53 +294,57 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                                 if eliminar_foto_db(item["id_foto"]): st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO
+# HERRAMIENTA 3: PIPELINE DE TRABAJO SEPARADO (BITE-SIZED EXTRACTION Prompts)
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT_LAB = """
-Eres un analizador pericial de reportes de laboratorios ambientales. Tu tarea es extraer los datos en dos bloques independientes estructurados en JSON.
+PROMPT_EXTRAER_QUIMICOS = """
+Eres un extractor analítico pericial de laboratorios químicos. Tu única tarea es extraer los resultados analíticos puros de cada muestra de suelo.
+Formatos aceptados: HFL, Benceno, Tolueno, Etilbenceno, Xilenos, pH y Humedad.
 
-Extrae la información bajo este formato estricto:
-{
-  "analiticos": [
-     {
-       "id_muestra": "ID de la muestra tal como aparece (ej: P1 0.6 o P10.75)",
-       "HFL": 1876.25,
-       "Benceno": 0.0,
-       "Tolueno": 0.0,
-       "Etilbenceno": 0.0,
-       "Xilenos": 0.0,
-       "pH": 7.87,
-       "Humedad": 16.797
-     }
-  ],
-  "campo": [
-     {
-       "id_muestra": "ID de la muestra tal como aparece en la cadena o formato de campo",
-       "zona": "Zona afectada (ej. ZONA 1 o PERIFERIA)",
-       "profundidad": "Profundidad reportada (ej. 0.60)",
-       "coordenada_x": "Metros Este (UTM X)",
-       "coordenada_y": "Metros Norte (UTM Y)"
-     }
-  ]
-}
-
-REGLAS:
-- En analíticos, si un valor reporta '< L.C.' o 'ND', colócalo estrictamente como 0.0.
-- Extrae la totalidad de las muestras que encuentres. No uses puntos suspensivos ("...") ni resúmenes.
-- Devuelve EXCLUSIVAMENTE el objeto JSON sin markdown explicativo.
+Reglas:
+- Si el valor es '< L.C.' o 'ND', colócalo estrictamente como 0.0.
+- Devuelve la totalidad de las muestras encontradas en este formato JSON exacto:
+[
+  {
+    "id_muestra": "ID original (ej: P1 0.6)",
+    "HFL": 1876.25,
+    "Benceno": 0.0,
+    "Tolueno": 0.0,
+    "Etilbenceno": 0.0,
+    "Xilenos": 0.0,
+    "pH": 7.87,
+    "Humedad": 16.797
+  }
+]
 """
 
-def analizar_reporte_laboratorio(client: anthropic.Anthropic, texto_pdf: str) -> dict:
+PROMPT_EXTRAER_CAMPO = """
+Eres un experto en topografía y control operativo ambiental. Tu única tarea es extraer los datos físicos de localización recopilados en las Cadenas de Custodia y Formatos de Campo.
+
+Reglas:
+- Busca la "Zona afectada" (ej. ZONA 1), la "Profundidad" y las coordenadas "Metros Este" (UTM X) y "Metros Norte" (UTM Y).
+- Devuelve la totalidad de los renglones en este formato JSON exacto:
+[
+  {
+    "id_muestra": "ID de muestra (ej: P10.6 o P1 0.6)",
+    "zona": "ZONA 1",
+    "profundidad": "0.60",
+    "coordenada_x": "250037.32",
+    "coordenada_y": "2420516.68"
+  }
+]
+"""
+
+def consultar_ia_parser(client: anthropic.Anthropic, prompt_sistema: str, texto_pdf: str) -> list[dict]:
     message = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=8192, system=SYSTEM_PROMPT_LAB,
-        messages=[{"role": "user", "content": f"Extrae los dos bloques de datos del siguiente documento:\n\n{texto_pdf}"}]
+        model="claude-sonnet-4-6", max_tokens=4096, system=prompt_sistema,
+        messages=[{"role": "user", "content": texto_pdf}]
     )
     text_content = message.content[0].text.strip()
-    match = re.search(r'\{.*\}', text_content, re.DOTALL)
+    match = re.search(r'\[\s*\{.*\}\s*\]', text_content, re.DOTALL)
     raw = match.group(0) if match else text_content
-    raw = re.sub(r',\s*([\]}])', r'\1', raw)
+    raw = re.sub(r',\s*([\]}])', r'\1', raw) # Limpieza de comas terminales
     try: return json.loads(raw)
-    except Exception: return {}
+    except Exception: return []
 
 def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     st.header("🧪 Herramienta 3 — Vaciado Automático de Laboratorio")
@@ -358,65 +354,67 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
     uso_suelo = detalles["uso_de_suelo"] if detalles else "Agrícola/Forestal"
     limites_vigentes = NOM_138_MATRIZ[uso_suelo]
 
-    st.subheader(f"📋 Criterio Regulario: `NOM-138 ({uso_suelo})`")
+    st.subheader(f"📋 Marco Regulatorio Activo: `NOM-138 ({uso_suelo})`")
     cols_l = st.columns(5)
     for col, (param, val) in zip(cols_l, limites_vigentes.items()):
         col.metric(f"LMP {param}", f"{val} mg/kg")
     st.markdown("---")
 
     uploaded_pdf = st.file_uploader("Sube el PDF analítico integral", type=["pdf"])
-    if uploaded_pdf and st.button("🔍 Iniciar Extracción Cruzada", type="primary"):
-        with st.spinner("Ejecutando pipeline relacional paralelo en Neon…"):
-            texto = extract_pdf_text(uploaded_pdf.read())
-            data_dict = analizar_reporte_laboratorio(client, texto)
+    if uploaded_pdf and st.button("🔍 Iniciar Extracción Corporativa", type="primary"):
+        with st.spinner("Paso 1/2: Segmentando PDF y parseando analíticos químicos…"):
+            texto_q, texto_c = segmentar_reporte_pdf(uploaded_pdf.read())
+            
+            # Extracción del bloque químico
+            lista_analiticos = consultar_ia_parser(client, PROMPT_EXTRAER_QUIMICOS, texto_q)
+            
+        if not lista_analiticos:
+            st.error("Error al estructurar los analíticos químicos del reporte. El volumen superó la ventana inicial.")
+            return
 
-            lista_analiticos = data_dict.get("analiticos", [])
-            lista_campo = data_dict.get("campo", [])
+        with st.spinner("Paso 2/2: Extrayendo mapeo de Cadenas de Custodia y Formatos de Campo…"):
+            # Extracción del bloque geográfico
+            lista_campo = consultar_ia_parser(client, PROMPT_EXTRAER_CAMPO, texto_c)
 
-            if not lista_analiticos:
-                st.error("Error al estructurar los datos del reporte. El volumen de celdas excedió el parseo inicial.")
-                return
+        # Mapeo determinístico por software en Python (Seguro, rápido y sin límite de tokens)
+        mapa_campo = {}
+        for row_c in lista_campo:
+            id_norm = normalizar_id_muestra(row_c.get("id_muestra", ""))
+            if id_norm: mapa_campo[id_norm] = row_c
 
-            mapa_campo = {}
-            for row_c in lista_campo:
-                id_norm = normalizar_id_muestra(row_c.get("id_muestra", ""))
-                if id_norm: mapa_campo[id_norm] = row_c
+        for row_a in lista_analiticos:
+            id_orig = row_a.get("id_muestra", "")
+            id_norm = normalizar_id_muestra(id_orig)
+            
+            # Cruzamos los datos de campo correspondientes usando Pandas-logic manual
+            datos_c = mapa_campo.get(id_norm, {})
+            zona = datos_c.get("zona", "Campo")
+            profundidad = datos_c.get("profundidad", "0.0")
+            x = datos_c.get("coordenada_x", "0.0")
+            y = datos_c.get("coordenada_y", "0.0")
 
-            for row_a in lista_analiticos:
-                id_orig = row_a.get("id_muestra", "")
-                id_norm = normalizar_id_muestra(id_orig)
-                
-                datos_c = mapa_campo.get(id_norm, {})
-                zona = datos_c.get("zona", "Campo")
-                profundidad = datos_c.get("profundidad", "0.0")
-                x = datos_c.get("coordenada_x", "0.0")
-                y = datos_c.get("coordenada_y", "0.0")
+            hfl_val = safe_float(row_a.get("HFL", 0.0))
+            b_val = safe_float(row_a.get("Benceno", 0.0))
+            t_val = safe_float(row_a.get("Tolueno", 0.0))
+            e_val = safe_float(row_a.get("Etilbenceno", 0.0))
+            x_val = safe_float(row_a.get("Xilenos", 0.0))
 
-                hfl_val = safe_float(row_a.get("HFL", 0.0))
-                b_val = safe_float(row_a.get("Benceno", 0.0))
-                t_val = safe_float(row_a.get("Tolueno", 0.0))
-                e_val = safe_float(row_a.get("Etilbenceno", 0.0))
-                x_val = safe_float(row_a.get("Xilenos", 0.0))
+            rebo = (
+                hfl_val > limites_vigentes["HFL"] or b_val > limites_vigentes["Benceno"] or
+                t_val > limites_vigentes["Tolueno"] or e_val > limites_vigentes["Etilbenceno"] or
+                x_val > limites_vigentes["Xilenos"]
+            )
 
-                rebo = (
-                    hfl_val > limites_vigentes["HFL"] or
-                    b_val > limites_vigentes["Benceno"] or
-                    t_val > limites_vigentes["Tolueno"] or
-                    e_val > limites_vigentes["Etilbenceno"] or
-                    x_val > limites_vigentes["Xilenos"]
-                )
+            json_res = json.dumps({
+                "HFL": hfl_val, "Benceno": b_val, "Tolueno": t_val,
+                "Etilbenceno": e_val, "Xilenos": x_val,
+                "pH": safe_float(row_a.get("pH", 0.0)), "Humedad": safe_float(row_a.get("Humedad", 0.0))
+            })
 
-                json_res = json.dumps({
-                    "HFL": hfl_val, "Benceno": b_val, "Tolueno": t_val,
-                    "Etilbenceno": e_val, "Xilenos": x_val,
-                    "pH": safe_float(row_a.get("pH", 0.0)),
-                    "Humedad": safe_float(row_a.get("Humedad", 0.0))
-                })
+            guardar_muestra_db(st.session_state.proyecto_actual, id_orig, zona, profundidad, x, y, json_res, rebo)
 
-                guardar_muestra_db(st.session_state.proyecto_actual, id_orig, zona, profundidad, x, y, json_res, rebo)
-
-            st.success("¡Vaciado relacional completado con éxito!")
-            st.rerun()
+        st.success("¡Muestras extraídas y enlazadas con éxito en Neon!")
+        st.rerun()
 
     historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual)
     if historial:
@@ -436,14 +434,8 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         st.dataframe(df.style.applymap(lambda v: 'background-color: #ffcccc; color: #cc0000; font-weight: bold;' if v == "🚨 EXCEDE" else '', subset=['Evaluación NOM-138']), use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# CORE LOGÍSTICO API
+# LOGÍSTICA DE CORE Y SIDEBAR
 # ---------------------------------------------------------------------------
-def get_client() -> anthropic.Anthropic:
-    try: api_key = st.secrets["ANTHROPIC_API_KEY"]
-    except (KeyError, FileNotFoundError): api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key: st.error("⚠️ Falta ANTHROPIC_API_KEY."); st.stop()
-    return anthropic.Anthropic(api_key=api_key)
-
 def render_sidebar() -> str:
     with st.sidebar:
         st.markdown("## 🌿 Hub Ambiental")
@@ -468,7 +460,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🧪 Vaciado de Laboratorio"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.8.1 (Fijado Completo)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.9.0 (Arquitectura Segmentada)**")
     return herramienta
 
 def check_password() -> bool:
