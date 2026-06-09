@@ -4,7 +4,7 @@ Hub de Automatización Ambiental
 Aplicación Streamlit multi-herramienta para empresas de remediación de suelos.
 Motor cognitivo: Claude 4.6 Sonnet (Anthropic API).
 
-Versión: 1.7.1 
+Versión: 1.7.2 (Filtro Inteligente Anti-Cromatogramas en PostgreSQL)
 """
 
 from __future__ import annotations
@@ -191,7 +191,7 @@ def cargar_laboratorio_proyecto(id_proyecto: str) -> list[dict]:
     except Exception: return []
 
 # ---------------------------------------------------------------------------
-# Helpers de API y PDF
+# Helpers de API y Filtro Avanzado de PDF
 # ---------------------------------------------------------------------------
 def get_client() -> anthropic.Anthropic:
     try: api_key = st.secrets["ANTHROPIC_API_KEY"]
@@ -210,10 +210,15 @@ def resize_image_if_needed(image_bytes: bytes, max_px: int = 1_500) -> bytes:
     return buf.getvalue()
 
 def extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extrae el texto del PDF saltándose inteligentemente las páginas de ruido técnico."""
     text_parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            text_parts.append(f"\n--- PÁGINA {i} ---\n{page.extract_text() or ''}")
+            text = page.extract_text() or ""
+            # 🧠 SOLUCIÓN TRUCO: Saltamos las páginas de cromatogramas que bloqueaban la ventana de contexto
+            if "TRACE 1310" in text or "Intensity" in text or "RT(min)" in text:
+                continue
+            text_parts.append(f"\n--- PÁGINA {i} ---\n{text}")
     return "\n".join(text_parts)
 
 # ---------------------------------------------------------------------------
@@ -257,7 +262,7 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                             if eliminar_foto_db(item["id_foto"]): st.rerun()
 
 # ---------------------------------------------------------------------------
-# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO (PROMPT AJUSTADO)
+# HERRAMIENTA 3: VACIADO INTELIGENTE DE LABORATORIO
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT_LAB = """
 Eres un auditor analítico pericial experto en reportes de laboratorios de suelos contaminados (Novalabsa/LABSA) en México conforme a la NOM-138-SEMARNAT/SSA1-2012.
@@ -267,7 +272,7 @@ Tu objetivo es realizar una extracción cruzada exacta unificando la informació
 2) HOJA DE CADENA DE CUSTODIA (Sección titulada "CADENA DE CUSTODIA"): De estas hojas debes extraer estrictamente los datos de campo operativos: "Identificación de la muestra" (ID), la "Zona" afectada y la "Profundidad".
 3) HOJA DE FORMATO DE CAMPO (Sección titulada "FORMATO DE CAMPO PARA MUESTREO DE SUELOS"): De esta sección debes extraer de manera obligatoria las coordenadas GPS (UTM) "Metros Este" (Coordenada X) y "Metros Norte" (Coordenada Y) correspondientes a cada ID de muestra.
 
-Devuelve exclusivamente un arreglo JSON sin texto explicativo externo:
+Devuelve exclusivamente un arreglo JSON válido (asegúrate de cerrar correctamente corchetes y llaves). No incluyas texto explicativo externo:
 [
   {
     "id_muestra": "ID exacto (ej: P1 0.6)",
@@ -289,9 +294,11 @@ Devuelve exclusivamente un arreglo JSON sin texto explicativo externo:
 def analizar_reporte_laboratorio(client: anthropic.Anthropic, texto_pdf: str) -> list[dict]:
     message = client.messages.create(
         model="claude-sonnet-4-6", max_tokens=4096, system=SYSTEM_PROMPT_LAB,
-        messages=[{"role": "user", "content": f"Ejecuta el vaciado cruzado analítico:\n\n{texto_pdf[:220000]}"}]
+        messages=[{"role": "user", "content": f"Ejecuta el vaciado cruzado analítico:\n\n{texto_pdf}"}]
     )
-    raw = re.sub(r"```json|```", "", message.content[0].text.strip()).strip()
+    # Expresión regular robusta para capturar el arreglo JSON incluso si Claude agrega marcas de bloque
+    match = re.search(r'\[.*\]', message.content[0].text.strip(), re.DOTALL)
+    raw = match.group(0) if match else message.content[0].text.strip()
     try: return json.loads(raw)
     except Exception: return []
 
@@ -311,7 +318,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
 
     uploaded_pdf = st.file_uploader("Sube el PDF analítico integral", type=["pdf"])
     if uploaded_pdf and st.button("🔍 Iniciar Extracción Cruzada", type="primary"):
-        with st.spinner("Procesando analíticos, cadena de custodia y formato de campo..."):
+        with st.spinner("Procesando analíticos, cadena de custodia y formato de campo sin ruido de cromatogramas..."):
             texto = extract_pdf_text(uploaded_pdf.read())
             muestras_extraidas = analizar_reporte_laboratorio(client, texto)
 
@@ -339,7 +346,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                     m.get("coordenada_x", "0.0"), m.get("coordenada_y", "0.0"),
                     json_res, rebo
                 )
-            st.success("¡Vaciado de datos completado y blindado en PostgreSQL!")
+            st.success("¡Vaciado de datos completado y blindado en PostgreSQL Nube!")
             st.rerun()
 
     historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual)
@@ -360,7 +367,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
         st.dataframe(df.style.applymap(lambda v: 'background-color: #ffcccc; color: #cc0000; font-weight: bold;' if v == "🚨 EXCEDE" else '', subset=['Evaluación NOM-138']), use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# SIDBAR Y MAIN NATIVO
+# SIDEBAR Y MAIN NATIVO
 # ---------------------------------------------------------------------------
 def render_sidebar() -> str:
     with st.sidebar:
@@ -386,7 +393,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         herramienta = st.radio("Herramientas:", ["📷 Filtro de Fotografías", "🧪 Vaciado de Laboratorio"], label_visibility="collapsed")
         st.markdown("---")
-        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.7.1 (Ajuste de Precisión)**")
+        st.caption("⚙️ Motor: Claude 4.6 Sonnet  \n**v1.7.2 (Filtro Anti-Ruido)**")
     return herramienta
 
 def check_password() -> bool:
