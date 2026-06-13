@@ -144,6 +144,12 @@ def inicializar_db() -> bool:
                 rebase_nom    BOOLEAN DEFAULT FALSE
             )
         """)
+        # 🔥 PARCHE DE MIGRACIÓN: Forzar la creación de columnas en tablas viejas
+        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS zona TEXT;")
+        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS profundidad TEXT;")
+        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS coordenada_x TEXT;")
+        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS coordenada_y TEXT;")
+
         conn.commit()
         c.close()
         conn.close()
