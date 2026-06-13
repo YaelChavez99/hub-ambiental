@@ -58,7 +58,7 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 
 # ── Corrección 1: modelo en un solo lugar ──────────────────────────────────
-MODEL_ID = "claude-sonnet-4-20250514"
+MODEL_ID = "claude-sonnet-4-5-20250514"
 
 # ── Corrección 2: parámetros Vision ajustados ─────────────────────────────
 # 12 páginas por lote → PDF de 86 págs = 7-8 llamadas (vs 17 con lote=5)
