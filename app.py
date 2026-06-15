@@ -43,6 +43,44 @@ from tabla_nom138 import render_tabla_nom138, generar_tabla_nom138_html
 # Módulo de auditoría técnica (Fase 3)
 from auditor_tecnico import render_herramienta_auditor
 
+# Módulo de dispersión + Capítulo 5 (Fase 4)
+from dispersor_hc import render_herramienta_dispersion
+
+# Módulo de gestión multi-proyecto (Fase 5)
+from gestor_proyectos import (
+    migrar_bd_fase5,
+    registrar_evento,
+    render_dashboard_proyecto,
+    render_gestor_proyectos,
+    cargar_todos_proyectos,
+    actualizar_proyecto,
+    guardar_documento_db,
+)
+
+# ---------------------------------------------------------------------------
+# INTERRUPTOR MODO DE PRUEBA — sin costo de API
+# ---------------------------------------------------------------------------
+# Para activar:  MODO_PRUEBA=1 streamlit run app.py
+# Para producción (default): simplemente   streamlit run app.py
+_MODO_PRUEBA = os.getenv("MODO_PRUEBA", "0") == "1"
+if _MODO_PRUEBA:
+    from mocks import (          # noqa: F401  (sobreescribe funciones reales)
+        analizar_fotografia,
+        _llamar_claude_lab_texto,
+        _llamar_claude_lab_vision,
+        analizar_reporte_laboratorio,
+        auditar_informe,
+        analizar_dispersion_claude,
+        generar_capitulo5_claude,
+    )
+    # Parche en módulos externos para que también usen los mocks
+    import mocks as _mocks
+    import auditor_tecnico as _aud_mod
+    import dispersor_hc    as _dis_mod
+    _aud_mod.auditar_informe          = _mocks.auditar_informe
+    _dis_mod.analizar_dispersion_claude = _mocks.analizar_dispersion_claude
+    _dis_mod.generar_capitulo5_claude   = _mocks.generar_capitulo5_claude
+
 # ---------------------------------------------------------------------------
 # Configuración de página  —  DEBE ser la primera llamada Streamlit
 # ---------------------------------------------------------------------------
@@ -58,7 +96,8 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 
 # ── Corrección 1: modelo en un solo lugar ──────────────────────────────────
-MODEL_ID = "claude-sonnet-4-6"
+# Nombre oficial verificado en la API de Anthropic (junio 2026)
+MODEL_ID = "claude-sonnet-4-5"
 
 # ── Corrección 2: parámetros Vision ajustados ─────────────────────────────
 # 12 páginas por lote → PDF de 86 págs = 7-8 llamadas (vs 17 con lote=5)
@@ -144,12 +183,24 @@ def inicializar_db() -> bool:
                 rebase_nom    BOOLEAN DEFAULT FALSE
             )
         """)
-        # 🔥 PARCHE DE MIGRACIÓN: Forzar la creación de columnas en tablas viejas
-        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS zona TEXT;")
-        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS profundidad TEXT;")
-        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS coordenada_x TEXT;")
-        c.execute("ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS coordenada_y TEXT;")
-
+        # ── Migraciones en caliente (Error 4: column does not exist) ──────────
+        # Agrega columnas nuevas a tablas existentes sin romper datos previos.
+        # ADD COLUMN IF NOT EXISTS es idempotente: seguro ejecutar en cada arranque.
+        migraciones = [
+            "ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS zona           TEXT",
+            "ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS profundidad    TEXT",
+            "ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS coordenada_x   TEXT",
+            "ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS coordenada_y   TEXT",
+            "ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS json_resultados TEXT",
+            "ALTER TABLE datos_laboratorio ADD COLUMN IF NOT EXISTS rebase_nom     BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS uso_de_suelo TEXT DEFAULT 'Agrícola/Forestal'",
+            "ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS estado       TEXT DEFAULT 'Activo'",
+        ]
+        for sql in migraciones:
+            try:
+                c.execute(sql)
+            except Exception:
+                pass   # columna ya existe — seguro ignorar
         conn.commit()
         c.close()
         conn.close()
@@ -363,16 +414,22 @@ def parsear_json_lista(text_content: str) -> list[dict]:
 def extract_pdf_text(pdf_bytes: bytes) -> str:
     """
     Extrae texto de todas las páginas con pdfplumber.
-    Filtra páginas de cromatogramas (TRACE, INTENSITY, RT(MIN)).
+    ERROR 6 — Filtra páginas de cromatogramas e instrumentación para evitar
+    saturar el contexto con datos inútiles (TRACE, INTENSITY, RT(MIN), etc.).
     """
+    # Palabras clave que identifican páginas de cromatogramas / instrumentación
+    _SKIP_KEYWORDS = (
+        "TRACE 1310", "INTENSITY", "RT(MIN)", "TRACEFINDER",
+        "MASS SPECTROMETER", "TIC MS", "MASS SPECTROM",
+        "CHROMATOGRAM", "CROMATOGRAMA", "SCAN", "ION RATIO",
+    )
     parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
+            text  = page.extract_text() or ""
             upper = text.upper()
-            if any(kw in upper for kw in
-                   ("TRACE 1310", "INTENSITY", "RT(MIN)", "TRACEFINDER")):
-                continue
+            if any(kw in upper for kw in _SKIP_KEYWORDS):
+                continue   # página de cromatograma — omitir
             parts.append(f"\n--- PÁGINA {i} ---\n{text}")
     return "\n".join(parts)
 
@@ -456,22 +513,19 @@ REGLAS:
 - No repitas la misma id_muestra dos veces.
 - Devuelve ÚNICAMENTE el arreglo JSON, sin texto adicional, sin markdown.
 
-Formato requerido (ejemplo):
+REGLA ZERO-SHOT (Error 5): Si las imágenes o el texto NO contienen tablas
+analíticas de laboratorio con muestras de suelo, devuelve ÚNICAMENTE: []
+Está TERMINANTEMENTE PROHIBIDO escribir explicaciones, disculpas, comentarios
+o cualquier texto fuera del JSON. Ni en español ni en inglés. Solo JSON.
+
+REGLA DE MINIFICACIÓN (Error 2): El JSON de salida debe ser compacto,
+sin saltos de línea innecesarios dentro de cada objeto. Usa el formato:
+[{"id_muestra":"P1 0.6","zona":"ZONA 1","profundidad":"0.60","coordenada_x":"250037.32","coordenada_y":"2420516.68","HFL":1876.25,"Benceno":0.0,"Tolueno":0.0,"Etilbenceno":0.0,"Xilenos":0.0,"pH":7.87,"Humedad":16.797}]
+
+Formato de ejemplo (una muestra por línea del array):
 [
-  {
-    "id_muestra":   "P1 0.6",
-    "zona":         "ZONA 1",
-    "profundidad":  "0.60",
-    "coordenada_x": "250037.32",
-    "coordenada_y": "2420516.68",
-    "HFL":          1876.25,
-    "Benceno":      0.0,
-    "Tolueno":      0.0,
-    "Etilbenceno":  0.0,
-    "Xilenos":      0.0,
-    "pH":           7.87,
-    "Humedad":      16.797
-  }
+{"id_muestra":"P1 0.6","zona":"ZONA 1","profundidad":"0.60","coordenada_x":"250037.32","coordenada_y":"2420516.68","HFL":1876.25,"Benceno":0.0,"Tolueno":0.0,"Etilbenceno":0.0,"Xilenos":0.0,"pH":7.87,"Humedad":16.797},
+{"id_muestra":"P1 0.75","zona":"ZONA 1","profundidad":"0.75","coordenada_x":"250037.32","coordenada_y":"2420516.68","HFL":0.0,"Benceno":0.0,"Tolueno":0.0,"Etilbenceno":0.0,"Xilenos":0.0,"pH":7.35,"Humedad":22.95}
 ]
 """
 
@@ -483,11 +537,15 @@ Formato requerido (ejemplo):
 def _llamar_claude_lab_texto(
     client: anthropic.Anthropic, texto: str
 ) -> list[dict]:
-    """Envía un bloque de texto al modelo y retorna la lista de muestras."""
+    """
+    Envía un bloque de texto al modelo y retorna la lista de muestras.
+    ERROR 2: max_tokens=16000 + beta header evita JSON truncado en reportes largos.
+    """
     try:
         msg = client.messages.create(
             model=MODEL_ID,
-            max_tokens=8192,
+            max_tokens=16000,
+            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_LAB,
             messages=[{
                 "role": "user",
@@ -529,7 +587,8 @@ def _llamar_claude_lab_vision(
     try:
         msg = client.messages.create(
             model=MODEL_ID,
-            max_tokens=8192,
+            max_tokens=16000,
+            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_LAB,
             messages=[{"role": "user", "content": content}],
         )
@@ -1081,6 +1140,64 @@ def get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
+# ---------------------------------------------------------------------------
+# MODO PRUEBA / PRODUCCIÓN — intercambiador dinámico
+# ---------------------------------------------------------------------------
+
+def _aplicar_modo(modo_prueba: bool) -> None:
+    """
+    Intercambia en caliente las funciones que llaman a la API por sus mocks
+    (o las restaura) según el toggle del sidebar.
+
+    Funciona sobrescribiendo referencias en el módulo actual y en
+    auditor_tecnico, que tiene su propia copia de auditar_informe.
+    """
+    import sys
+
+    # Importar mocks solo cuando se necesitan
+    import mocks as _mocks
+
+    # Módulo auditor para parchear su referencia interna
+    import auditor_tecnico as _aud
+
+    # Módulo dispersión para parchear sus referencias internas
+    import dispersor_hc as _dis
+
+    # Guardar las funciones reales la primera vez
+    if "_fn_reales" not in st.session_state:
+        st.session_state["_fn_reales"] = {
+            "analizar_fotografia":          analizar_fotografia,
+            "_llamar_claude_lab_texto":     _llamar_claude_lab_texto,
+            "_llamar_claude_lab_vision":    _llamar_claude_lab_vision,
+            "analizar_reporte_laboratorio": analizar_reporte_laboratorio,
+            "auditar_informe":              _aud.auditar_informe,
+            "analizar_dispersion_claude":   _dis.analizar_dispersion_claude,
+            "generar_capitulo5_claude":     _dis.generar_capitulo5_claude,
+        }
+
+    mod = sys.modules[__name__]   # módulo app.py en ejecución
+
+    if modo_prueba:
+        # Activar mocks
+        mod.analizar_fotografia            = _mocks.analizar_fotografia
+        mod._llamar_claude_lab_texto       = _mocks._llamar_claude_lab_texto
+        mod._llamar_claude_lab_vision      = _mocks._llamar_claude_lab_vision
+        mod.analizar_reporte_laboratorio   = _mocks.analizar_reporte_laboratorio
+        _aud.auditar_informe               = _mocks.auditar_informe
+        _dis.analizar_dispersion_claude    = _mocks.analizar_dispersion_claude
+        _dis.generar_capitulo5_claude      = _mocks.generar_capitulo5_claude
+    else:
+        # Restaurar funciones reales
+        reales = st.session_state["_fn_reales"]
+        mod.analizar_fotografia            = reales["analizar_fotografia"]
+        mod._llamar_claude_lab_texto       = reales["_llamar_claude_lab_texto"]
+        mod._llamar_claude_lab_vision      = reales["_llamar_claude_lab_vision"]
+        mod.analizar_reporte_laboratorio   = reales["analizar_reporte_laboratorio"]
+        _aud.auditar_informe               = reales["auditar_informe"]
+        _dis.analizar_dispersion_claude    = reales["analizar_dispersion_claude"]
+        _dis.generar_capitulo5_claude      = reales["generar_capitulo5_claude"]
+
+
 def render_sidebar() -> str:
     with st.sidebar:
         st.markdown("## 🌿 Hub Ambiental")
@@ -1129,14 +1246,40 @@ def render_sidebar() -> str:
                 "📷 Filtro de Fotografías",
                 "🔎 Revisión Técnica Ambiental",
                 "🧪 Vaciado de Laboratorio",
+                "🌊 Dispersión + Capítulo 5",
+                "🗂️ Dashboard del Proyecto",
+                "📊 Gestor de Proyectos",
             ],
             label_visibility="collapsed",
         )
         st.markdown("---")
+
+        # ── Toggle Modo Prueba / Producción ────────────────────────────────
+        modo_prueba_activo = st.toggle(
+            "🟢 Modo Prueba (sin costo API)",
+            value=st.session_state.get("_modo_prueba", False),
+            help=(
+                "ON  → Usa datos simulados. Costo: $0.00\n"
+                "OFF → Usa la API real de Claude."
+            ),
+        )
+
+        # Detectar cambio de modo y aplicar mocks dinámicamente
+        if modo_prueba_activo != st.session_state.get("_modo_prueba", False):
+            st.session_state["_modo_prueba"] = modo_prueba_activo
+            _aplicar_modo(modo_prueba_activo)
+            st.rerun()
+
+        if modo_prueba_activo:
+            st.info("🟢 **MODO PRUEBA** — Costo: $0.00")
+        else:
+            st.success("🔵 **MODO PRODUCCIÓN** — API activa")
+
+        st.markdown("---")
         st.caption(
             f"⚙️ Motor: `{MODEL_ID}`  \n"
             f"Vision: lotes de {MAX_PAGINAS_VISION} págs · {VISION_DPI} DPI  \n"
-            "**v2.4.0 — Fase 3**"
+            "**v2.7.0 — Fase 5: Multi-Proyecto**"
         )
     return herramienta
 
@@ -1190,6 +1333,12 @@ def main() -> None:
         st.session_state["usuario_actual"]   = "Ingeniero"
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
+    if "_modo_prueba" not in st.session_state:
+        # Leer variable de entorno como valor inicial del toggle
+        st.session_state["_modo_prueba"] = os.getenv("MODO_PRUEBA", "0") == "1"
+        # Si arranca en modo prueba por env var, aplicar mocks inmediatamente
+        if st.session_state["_modo_prueba"]:
+            _aplicar_modo(True)
 
     # ── Guard de autenticación ────────────────────────────────────────────
     if not check_password():
@@ -1206,6 +1355,9 @@ def main() -> None:
                 "Verifica que `DATABASE_URL` en `secrets.toml` sea correcto."
             )
             st.stop()
+        else:
+            # Fase 5: migrar tablas nuevas en caliente (idempotente)
+            migrar_bd_fase5()
 
     # ── Mostrar error de BD si ocurrió en recarga posterior ───────────────
     if not st.session_state.get("_db_ok", True):
@@ -1226,6 +1378,49 @@ def main() -> None:
         )
     elif "Laboratorio" in herramienta:
         render_herramienta_lab(client)
+    elif "Dispersión" in herramienta:
+        # Pasar datos ya en BD para alimentar H4 sin recaptura
+        detalles  = obtener_detalles_proyecto(st.session_state.proyecto_actual) \
+                    if st.session_state.proyecto_actual else None
+        historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual) \
+                    if st.session_state.proyecto_actual else []
+        # Entidades del auditor disponibles en session_state si H2 ya corrió
+        entidades = (st.session_state
+                     .get("_auditoria_resultado", {})
+                     .get("entidades", {}))
+        render_herramienta_dispersion(
+            client             = client,
+            model_id           = MODEL_ID,
+            proyecto_actual    = st.session_state.proyecto_actual,
+            historial_lab      = historial,
+            detalles_proyecto  = detalles,
+            entidades_auditor  = entidades,
+        )
+    elif "Dashboard" in herramienta:
+        # H5a — Dashboard del proyecto activo
+        detalles  = obtener_detalles_proyecto(st.session_state.proyecto_actual) \
+                    if st.session_state.proyecto_actual else None
+        historial = cargar_laboratorio_proyecto(st.session_state.proyecto_actual) \
+                    if st.session_state.proyecto_actual else []
+        n_fotos   = len(cargar_fotos_proyecto(st.session_state.proyecto_actual)) \
+                    if st.session_state.proyecto_actual else 0
+        icti_val  = (st.session_state
+                     .get("_auditoria_resultado", {})
+                     .get("icti", {})
+                     .get("puntaje_total", 0))
+        render_dashboard_proyecto(
+            id_proyecto        = st.session_state.proyecto_actual,
+            historial_lab      = historial,
+            n_fotos            = n_fotos,
+            icti               = icti_val,
+            detalles_proyecto  = detalles,
+            usuario_actual     = st.session_state.get("usuario_actual", "Ingeniero"),
+        )
+    elif "Gestor" in herramienta:
+        # H5b — Tabla maestra de todos los proyectos
+        render_gestor_proyectos(
+            usuario_actual = st.session_state.get("usuario_actual", "Ingeniero"),
+        )
 
 
 if __name__ == "__main__":

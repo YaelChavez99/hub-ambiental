@@ -246,7 +246,7 @@ def auditar_informe(
 ) -> dict:
     """
     Envía el texto del informe a Claude y retorna el resultado estructurado.
-    Implementa desbloqueo de 8K tokens y filtro anticorte por saturación.
+    Si el texto supera 180k chars, lo trunca con advertencia.
     """
     MAX_CHARS = 180_000
     truncado = False
@@ -254,20 +254,11 @@ def auditar_informe(
         texto = texto[:MAX_CHARS]
         truncado = True
 
-    # Instrucción defensiva anti-corte para evitar que el JSON se rompa a la mitad
-    instruccion_anticorte = (
-        "\n\nCRÍTICO: Sé extremadamente conciso. Limita las listas de 'discrepancias', "
-        "'vacios_regulatorios' y 'debilidades_tecnicas' a un MÁXIMO de 10 elementos "
-        "por categoría, enfocándote exclusivamente en los hallazgos ALTA, IMPORTANTE o BLOQUEANTE."
-    )
-
     try:
-        # Aquí habilitamos los 8192 tokens con el extra_header oficial de Anthropic
         msg = client.messages.create(
             model=model_id,
             max_tokens=8192,
-            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
-            system=SYSTEM_PROMPT_AUDITOR + instruccion_anticorte,
+            system=SYSTEM_PROMPT_AUDITOR,
             messages=[{
                 "role": "user",
                 "content": (
@@ -280,12 +271,10 @@ def auditar_informe(
         )
         if msg.stop_reason == "max_tokens":
             st.warning(
-                "⚠️ La respuesta alcanzó el límite físico de tokens. "
-                "El análisis se optimizó para mostrar los hallazgos más críticos."
+                "⚠️ La respuesta fue truncada por límite de tokens. "
+                "El análisis puede estar incompleto."
             )
-            
         resultado = _parsear_respuesta_auditor(msg.content[0].text.strip())
-        
         if truncado:
             resultado["_advertencia_truncado"] = (
                 f"El informe fue truncado a {MAX_CHARS:,} caracteres. "
@@ -299,7 +288,12 @@ def auditar_informe(
     except Exception as exc:
         st.error(f"Error inesperado al auditar: {exc}")
         return {}
-      
+
+
+# ---------------------------------------------------------------------------
+# Renderizado de resultados
+# ---------------------------------------------------------------------------
+
 def _badge(texto: str, color_fg: str, color_bg: str) -> str:
     """Genera un badge HTML inline."""
     return (
@@ -400,7 +394,7 @@ def _render_entidades(entidades: dict) -> None:
     import pandas as pd
     df = pd.DataFrame(filas)
     st.dataframe(
-        df.style.map(
+        df.style.applymap(
             lambda v: "color:#cc6600;font-style:italic" if v == "— no encontrado —" else "",
             subset=["Valor"],
         ),
