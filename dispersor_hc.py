@@ -760,6 +760,28 @@ def render_herramienta_dispersion(
         st.session_state["_dispersion_analisis"] = analisis
         st.session_state["_dispersion_cap5"]     = cap5
         st.session_state["_dispersion_proyecto"] = proyecto_actual
+
+        # Registrar evento en historial del proyecto (Fase 5)
+        try:
+            from gestor_proyectos import registrar_evento as _reg_ev
+            patron = analisis.get("resumen_pluma", {}).get("patron_distribucion", "—")
+            _reg_ev(
+                proyecto_actual,
+                "DISPERSION",
+                f"Análisis de dispersión generado — patrón {patron} · "
+                f"HFL máx {stats.get('hfl_maximo', 0):.2f} mg/kg · "
+                f"{stats.get('muestras_rebase', 0)} muestras fuera de norma",
+                st.session_state.get("usuario_actual", "Ingeniero"),
+                {
+                    "hfl_maximo":      stats.get("hfl_maximo", 0),
+                    "muestras_rebase": stats.get("muestras_rebase", 0),
+                    "patron":          patron,
+                    "municipio":       contexto.get("municipio", ""),
+                },
+            )
+        except Exception:
+            pass   # El historial nunca rompe el flujo principal
+
         st.success("✅ Análisis completado. Revisa los resultados en los tabs.")
         st.rerun()
 

@@ -758,6 +758,13 @@ def render_herramienta_fotos(client: anthropic.Anthropic) -> None:
                 )
                 progress.progress((idx + 1) / total)
             st.success("¡Fotos guardadas permanentemente!")
+            registrar_evento(
+                st.session_state.proyecto_actual,
+                "FOTO",
+                f"{total} fotografía(s) procesadas y clasificadas con Claude Vision",
+                st.session_state.get("usuario_actual", "Ingeniero"),
+                {"n_fotos": total},
+            )
             st.rerun()
 
     fotos   = cargar_fotos_proyecto(st.session_state.proyecto_actual)
@@ -916,6 +923,14 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             )
         else:
             st.success("¡Todas las muestras archivadas permanentemente!")
+        registrar_evento(
+            st.session_state.proyecto_actual,
+            "LABORATORIO",
+            f"{len(muestras) - errores} muestra(s) extraídas del PDF de laboratorio",
+            st.session_state.get("usuario_actual", "Ingeniero"),
+            {"n_muestras": len(muestras), "errores": errores,
+             "uso_suelo": uso_suelo},
+        )
         st.rerun()
 
     # ── Historial ───────────────────────────────────────────────────────────

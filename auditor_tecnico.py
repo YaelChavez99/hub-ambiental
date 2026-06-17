@@ -165,6 +165,12 @@ REGLAS ESTRICTAS:
 - Si no hay vacíos regulatorios evidentes, devuelve "vacios_regulatorios": [].
 - El ICTI debe reflejar fielmente la calidad real del documento.
 - Responde ÚNICAMENTE con el JSON. CERO texto fuera del JSON.
+
+REGLA DE SÍNTESIS (Error 2 — evitar truncado): Para no exceder el límite de tokens,
+limita cada categoría a un MÁXIMO de 5 elementos (los más críticos/relevantes).
+Si hay más de 5, selecciona los de mayor impacto regulatorio y descarta los menores.
+Los strings dentro del JSON deben ser concisos: máximo 120 caracteres por campo de texto.
+El "comentario_ejecutivo" tiene un máximo de 300 caracteres.
 """
 
 # ---------------------------------------------------------------------------
@@ -256,8 +262,9 @@ def auditar_informe(
 
     try:
         msg = client.messages.create(
-            model=model_id,
-            max_tokens=8192,
+            model=model_id,          # usa MODEL_ID de app.py → "claude-sonnet-4-5"
+            max_tokens=16000,        # ERROR 2: evita JSON truncado en informes largos
+            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_AUDITOR,
             messages=[{
                 "role": "user",
@@ -394,7 +401,7 @@ def _render_entidades(entidades: dict) -> None:
     import pandas as pd
     df = pd.DataFrame(filas)
     st.dataframe(
-        df.style.applymap(
+        df.style.map(                          # ERROR 3: applymap → map (Pandas ≥2.1)
             lambda v: "color:#cc6600;font-style:italic" if v == "— no encontrado —" else "",
             subset=["Valor"],
         ),
@@ -582,6 +589,30 @@ def render_herramienta_auditor(
         st.session_state["_auditoria_resultado"]  = resultado
         st.session_state["_auditoria_proyecto"]   = proyecto_actual
         st.session_state["_auditoria_nombre_pdf"] = uploaded_pdf.name
+
+        # Registrar evento en historial del proyecto (Fase 5)
+        try:
+            from gestor_proyectos import registrar_evento as _reg_ev
+            icti_val = resultado.get("icti", {}).get("puntaje_total", 0)
+            nivel    = resultado.get("icti", {}).get("nivel", "—")
+            _reg_ev(
+                proyecto_actual,
+                "AUDITORIA",
+                f"Auditoría técnica completada — ICTI {icti_val}/100 ({nivel})",
+                st.session_state.get("usuario_actual", "Ingeniero"),
+                {
+                    "icti":          icti_val,
+                    "nivel":         nivel,
+                    "discrepancias": len(resultado.get("discrepancias", [])),
+                    "vacios":        len(resultado.get("vacios_regulatorios", [])),
+                    "pdf":           uploaded_pdf.name,
+                },
+            )
+            # Actualizar ICTI en la tabla proyectos
+            from gestor_proyectos import actualizar_proyecto as _act_proy
+            _act_proy(proyecto_actual, {"icti_ultimo": icti_val})
+        except Exception:
+            pass   # El historial nunca rompe el flujo principal
 
     # ── Mostrar resultados (de la sesión actual o de ejecución previa) ──────
     resultado = st.session_state.get("_auditoria_resultado")
