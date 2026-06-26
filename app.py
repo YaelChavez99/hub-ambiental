@@ -57,6 +57,13 @@ from gestor_proyectos import (
     guardar_documento_db,
 )
 
+# Módulos INEGI + CONAGUA (Fase 6)
+from inegi_api   import migrar_bd_inegi
+from conagua_ref import migrar_bd_conagua, render_panel_conagua
+
+# Módulo de exportación Word (Fase 7)
+from exportador_word import render_descarga_word
+
 # ---------------------------------------------------------------------------
 # INTERRUPTOR MODO DE PRUEBA — sin costo de API
 # ---------------------------------------------------------------------------
@@ -101,7 +108,7 @@ MODEL_ID = "claude-sonnet-4-5"
 
 # ── Corrección 2: parámetros Vision ajustados ─────────────────────────────
 # 12 páginas por lote → PDF de 86 págs = 7-8 llamadas (vs 17 con lote=5)
-MAX_PAGINAS_VISION  = 12
+MAX_PAGINAS_VISION  = 12   # Ya no usado como límite fijo — ver _calcular_lote_optimo()
 # 1 500 chars útiles como umbral mínimo para considerar PDF con texto real
 UMBRAL_CHARS_UTILES = 1_500
 # 100 DPI: suficiente para leer tablas; más alto → error 413 de payload
@@ -545,7 +552,6 @@ def _llamar_claude_lab_texto(
         msg = client.messages.create(
             model=MODEL_ID,
             max_tokens=16000,
-            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_LAB,
             messages=[{
                 "role": "user",
@@ -566,9 +572,15 @@ def _llamar_claude_lab_texto(
 def _llamar_claude_lab_vision(
     client: anthropic.Anthropic, imagenes_b64: list[str]
 ) -> list[dict]:
-    """Envía un lote de páginas como imágenes y retorna la lista de muestras."""
+    """
+    Envía un lote de imágenes JPEG base64 a Claude Vision.
+    Si el payload es rechazado por 400 (demasiado grande),
+    divide el lote a la mitad y reintenta automáticamente —
+    permite procesar PDFs de cualquier tamaño sin límite fijo.
+    """
     if not imagenes_b64:
         return []
+
     content: list[dict] = []
     for b64 in imagenes_b64:
         content.append({
@@ -584,24 +596,29 @@ def _llamar_claude_lab_vision(
             "Devuelve ÚNICAMENTE el arreglo JSON sin texto adicional."
         ),
     })
+
     try:
         msg = client.messages.create(
             model=MODEL_ID,
             max_tokens=16000,
-            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_LAB,
             messages=[{"role": "user", "content": content}],
         )
         if msg.stop_reason == "max_tokens":
             st.warning("⚠️ Respuesta truncada (lote de imágenes).")
         return parsear_json_lista(msg.content[0].text.strip())
-    except anthropic.BadRequestError as exc:
-        # Error 400 típico cuando el payload de imágenes es demasiado grande
-        st.warning(
-            f"⚠️ Lote rechazado (payload demasiado grande o imagen inválida): {exc}\n"
-            "Considera reducir VISION_DPI o MAX_PAGINAS_VISION."
-        )
-        return []
+
+    except anthropic.BadRequestError:
+        # Payload demasiado grande → dividir el lote a la mitad y reintentar
+        mitad = len(imagenes_b64) // 2
+        if mitad < 1:
+            st.warning("⚠️ Página individual rechazada por la API — omitida.")
+            return []
+        st.caption(f"   ↳ Lote grande, dividiendo en 2 sublotes de {mitad} págs…")
+        resultado_a = _llamar_claude_lab_vision(client, imagenes_b64[:mitad])
+        resultado_b = _llamar_claude_lab_vision(client, imagenes_b64[mitad:])
+        return resultado_a + resultado_b
+
     except anthropic.APIStatusError as exc:
         st.error(f"Error de API (visión): {exc.status_code} — {exc.message}")
         return []
@@ -610,22 +627,47 @@ def _llamar_claude_lab_vision(
         return []
 
 
+def _calcular_lote_optimo(imagenes_b64: list[str]) -> int:
+    """
+    Calcula el tamaño de lote óptimo basado en el tamaño REAL
+    de las imágenes (no un límite fijo de páginas), con objetivo
+    de mantener cada llamada API por debajo de ~3.5 MB.
+    Rango: 1 a 20 páginas por lote, sin tope superior artificial
+    en el número total de lotes — soporta PDFs de cualquier tamaño.
+    """
+    if not imagenes_b64:
+        return 5
+    muestra   = imagenes_b64[:min(5, len(imagenes_b64))]
+    avg_bytes = sum(len(b) * 3 // 4 for b in muestra) // len(muestra)
+    objetivo_bytes = 3_500_000
+    lote = max(1, min(20, objetivo_bytes // max(avg_bytes, 1)))
+    return lote
+
+
 def analizar_reporte_laboratorio(
     client: anthropic.Anthropic, pdf_bytes: bytes
 ) -> list[dict]:
     """
-    Estrategia adaptativa mejorada:
-    1. Extrae texto con pdfplumber y evalúa si tiene datos analíticos reales.
-    2. Si sí → modo texto con chunking automático.
-    3. Si no → modo visión: renderiza páginas como JPEG y envía en lotes.
-    Deduplica por id_muestra en ambos casos.
-    """
-    texto       = extract_pdf_text(pdf_bytes)
-    chars_utiles = len(texto.replace(" ", "").replace("\n", "").replace("-", ""))
-    st.caption(f"📊 Caracteres útiles en el PDF: {chars_utiles:,}")
+    Motor adaptativo de extracción — soporta PDFs de CUALQUIER TAMAÑO
+    (86, 100, 150+ páginas) sin límite fijo.
 
-    todas:     list[dict] = []
-    ids_vistos: set[str]  = set()
+    Estrategia:
+    1. Extrae texto con pdfplumber y filtra cromatogramas.
+    2. Si tiene texto analítico → modo texto con chunking automático
+       por caracteres (no por páginas), procesando todos los bloques
+       que sean necesarios.
+    3. Si es escaneado → modo visión con lotes calculados dinámicamente
+       según el peso real de las imágenes. Si un lote es rechazado por
+       la API (400), se subdivide automáticamente sin intervención manual.
+    4. Deduplica por id_muestra al consolidar todos los lotes/bloques,
+       manteniendo el contexto agregado entre llamadas.
+    """
+    texto        = extract_pdf_text(pdf_bytes)
+    chars_utiles = len(texto.replace(" ", "").replace("\n", "").replace("-", ""))
+    st.caption(f"📊 Caracteres útiles extraídos: {chars_utiles:,}")
+
+    todas:      list[dict] = []
+    ids_vistos: set[str]   = set()
 
     def acumular(muestras: list[dict]) -> None:
         for m in muestras:
@@ -634,15 +676,15 @@ def analizar_reporte_laboratorio(
                 todas.append(m)
                 ids_vistos.add(iid)
 
-    # ── Modo texto ────────────────────────────────────────────────────────
+    # ── Modo texto — chunking automático sin límite de bloques ────────────
     if chars_utiles >= UMBRAL_CHARS_UTILES and texto_tiene_datos_analiticos(texto):
-        st.info("📄 Modo texto: capa de texto con datos analíticos detectada.")
+        st.info("📄 **Modo texto** — capa de texto con datos analíticos detectada.")
         if len(texto) <= MAX_CHARS_POR_CHUNK:
             acumular(_llamar_claude_lab_texto(client, texto))
         else:
             paginas = texto.split("\n--- PÁGINA ")
             chunks: list[str] = []
-            chunk_actual = ""
+            chunk_actual       = ""
             for pag in paginas:
                 frag = ("\n--- PÁGINA " + pag
                         if pag and not pag.startswith("\n") else pag)
@@ -654,36 +696,47 @@ def analizar_reporte_laboratorio(
                     chunk_actual += frag
             if chunk_actual.strip():
                 chunks.append(chunk_actual)
-            st.info(f"📄 PDF dividido en {len(chunks)} bloques de texto.")
+
+            prog = st.progress(0, text=f"Procesando {len(chunks)} bloques de texto…")
             for i, chunk in enumerate(chunks, 1):
-                st.caption(f"⚙️ Bloque {i}/{len(chunks)}…")
+                prog.progress(i / len(chunks), text=f"Bloque {i}/{len(chunks)}…")
                 antes = len(todas)
                 acumular(_llamar_claude_lab_texto(client, chunk))
-                st.caption(f"   ↳ {len(todas) - antes} muestra(s) nueva(s).")
+                st.caption(f"   ↳ Bloque {i}: {len(todas) - antes} muestra(s) nueva(s).")
+            prog.empty()
 
-    # ── Modo visión ────────────────────────────────────────────────────────
+    # ── Modo visión — chunking dinámico sin límite de páginas ─────────────
     else:
         motivo = (
-            "Texto con < 4 keywords analíticas o < 10 valores numéricos"
+            "texto insuficiente para análisis analítico"
             if chars_utiles >= UMBRAL_CHARS_UTILES
-            else "PDF escaneado (sin capa de texto)"
+            else "PDF escaneado sin capa de texto"
         )
-        st.info(f"🖼️ Modo visión activado — {motivo}. Renderizando páginas…")
+        st.info(f"🖼️ **Modo visión** — {motivo}. Renderizando páginas…")
+
         imagenes = pdf_a_imagenes_b64(pdf_bytes, dpi=VISION_DPI)
         total    = len(imagenes)
         if total == 0:
             st.error("❌ No se pudieron renderizar páginas del PDF.")
             return []
-        st.caption(f"📸 {total} página(s) a procesar en lotes de {MAX_PAGINAS_VISION}.")
-        lotes = [
-            imagenes[i : i + MAX_PAGINAS_VISION]
-            for i in range(0, total, MAX_PAGINAS_VISION)
-        ]
+
+        # Lote calculado dinámicamente según peso real — sin tope de lotes
+        tam_lote = _calcular_lote_optimo(imagenes)
+        lotes    = [imagenes[i: i + tam_lote] for i in range(0, total, tam_lote)]
+
+        st.caption(
+            f"📸 {total} página(s) · lote dinámico: {tam_lote} págs/llamada "
+            f"· {len(lotes)} lote(s) en total — soporta cualquier tamaño de PDF"
+        )
+
+        prog = st.progress(0, text=f"Enviando a Claude Vision… 0/{len(lotes)}")
         for i, lote in enumerate(lotes, 1):
-            st.caption(f"⚙️ Lote {i}/{len(lotes)} ({len(lote)} página(s))…")
+            prog.progress(i / len(lotes), text=f"Lote {i}/{len(lotes)} ({len(lote)} págs)…")
             antes = len(todas)
+            # Subdivisión automática ante 400 — sin intervención manual
             acumular(_llamar_claude_lab_vision(client, lote))
-            st.caption(f"   ↳ {len(todas) - antes} muestra(s) nueva(s).")
+            st.caption(f"   ↳ Lote {i}: {len(todas) - antes} muestra(s) nueva(s).")
+        prog.empty()
 
     return todas
 
@@ -1108,7 +1161,7 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
             )
 
         with col_html:
-            # Exportar la tabla oficial como HTML independiente (para incluir en informes)
+            # Exportar la tabla oficial como HTML independiente
             html_tabla = generar_tabla_nom138_html(
                 historial        = historial,
                 lim_vigentes     = lim_vigentes,
@@ -1129,6 +1182,37 @@ def render_herramienta_lab(client: anthropic.Anthropic) -> None:
                 mime="text/html",
                 use_container_width=True,
             )
+
+        # ── Exportación Word — tabla NOM-138 ─────────────────────────────
+        st.markdown("---")
+        st.markdown("**📄 Exportar Tabla NOM-138 a Word (.docx)**")
+        st.caption("Con colores de excedencias, fila LMP y nota de límites cuantificables.")
+        if st.button("⚙️ Generar Word — Tabla NOM-138", key="btn_word_nom138_h3"):
+            with st.spinner("Generando documento Word…"):
+                from exportador_word import generar_word_tabla_nom138
+                docx_bytes = generar_word_tabla_nom138(
+                    historial        = historial,
+                    lim_vigentes     = lim_vigentes,
+                    id_proyecto      = st.session_state.proyecto_actual,
+                    nombre_siniestro = nombre_sin,
+                    uso_suelo        = uso_suelo,
+                )
+            if docx_bytes:
+                st.download_button(
+                    "⬇️ Descargar Tabla NOM-138 (.docx)",
+                    data=docx_bytes,
+                    file_name=f"NOM138_{st.session_state.proyecto_actual}.docx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".wordprocessingml.document"
+                    ),
+                    use_container_width=True,
+                )
+
+        st.caption(
+            "El archivo .docx se puede abrir directamente en Word, "
+            "Google Docs o LibreOffice."
+        )
 
         st.caption(
             "El archivo HTML puede abrirse en cualquier navegador o pegarse "
@@ -1216,7 +1300,11 @@ def _aplicar_modo(modo_prueba: bool) -> None:
 def render_sidebar() -> str:
     with st.sidebar:
         st.markdown("## 🌿 Hub Ambiental")
-        st.write(f"👤 **Usuario:** {st.session_state.usuario_actual}")
+        rol_badge = {"ADMIN": "👑 Admin", "INGENIERO": "🔧 Ingeniero",
+                     "CONSULTOR": "👁️ Consultor"}.get(
+                        st.session_state.get("usuario_rol", "INGENIERO"),
+                        "🔧 Ingeniero")
+        st.write(f"👤 **{st.session_state.usuario_actual}** · {rol_badge}")
         st.markdown("---")
 
         # Selector de proyecto
@@ -1255,16 +1343,21 @@ def render_sidebar() -> str:
                         st.warning("Completa ID y Nombre del siniestro.")
 
         st.markdown("---")
+        opciones_herramientas = [
+            "📷 Filtro de Fotografías",
+            "🔎 Revisión Técnica Ambiental",
+            "🧪 Vaciado de Laboratorio",
+            "🌊 Dispersión + Capítulo 5",
+            "🗂️ Dashboard del Proyecto",
+            "📊 Gestor de Proyectos",
+            "💧 Acuíferos CONAGUA",
+        ]
+        if st.session_state.get("usuario_rol") == "ADMIN":
+            opciones_herramientas.append("👥 Administrar Usuarios")
+
         herramienta = st.radio(
             "Herramientas:",
-            [
-                "📷 Filtro de Fotografías",
-                "🔎 Revisión Técnica Ambiental",
-                "🧪 Vaciado de Laboratorio",
-                "🌊 Dispersión + Capítulo 5",
-                "🗂️ Dashboard del Proyecto",
-                "📊 Gestor de Proyectos",
-            ],
+            opciones_herramientas,
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -1293,45 +1386,26 @@ def render_sidebar() -> str:
         st.markdown("---")
         st.caption(
             f"⚙️ Motor: `{MODEL_ID}`  \n"
-            f"Vision: lotes de {MAX_PAGINAS_VISION} págs · {VISION_DPI} DPI  \n"
-            "**v2.7.0 — Fase 5: Multi-Proyecto**"
+            f"Vision: lotes dinámicos · {VISION_DPI} DPI · sin límite de páginas  \n"
+            "**v2.8.0 — Fase 5+: Multi-Usuario y Auditoría**"
         )
+
+        if st.button("🚪 Cerrar sesión", use_container_width=True):
+            for key in ("password_correct", "usuario_actual", "usuario_id",
+                       "usuario_username", "usuario_rol"):
+                st.session_state.pop(key, None)
+            st.rerun()
     return herramienta
 
 
 def check_password() -> bool:
     """
-    Corrección 7: guard limpio de autenticación.
-    Muestra solo el formulario de login hasta que las credenciales sean válidas.
-    Retorna True cuando el usuario está autenticado.
+    Sistema multi-usuario (Problema 4 — trazabilidad y auditoría).
+    Delega en usuarios.py para autenticación real contra BD con hash bcrypt.
+    Mantiene la misma firma para no romper el flujo de main().
     """
-    if st.session_state.get("password_correct"):
-        return True
-
-    st.markdown("## 🔒 Hub de Automatización Ambiental")
-    st.caption("Acceso restringido — ingresa tus credenciales para continuar.")
-
-    with st.form("login_form"):
-        usuario    = st.text_input("Usuario")
-        contrasena = st.text_input("Contraseña", type="password")
-        submitted  = st.form_submit_button("Entrar")
-
-    if submitted:
-        try:
-            creds = st.secrets["credenciales"]
-            if usuario == creds["usuario"] and contrasena == creds["password"]:
-                st.session_state["password_correct"] = True
-                st.session_state["usuario_actual"]   = usuario
-                st.rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos.")
-        except (KeyError, FileNotFoundError):
-            st.error(
-                "Credenciales no configuradas. "
-                "Agrega en secrets.toml:\n"
-                "```\n[credenciales]\nusuario = '...'\npassword = '...'\n```"
-            )
-    return False
+    from usuarios import render_login
+    return render_login()
 
 
 def main() -> None:
@@ -1346,6 +1420,12 @@ def main() -> None:
         st.session_state["nombre_proyecto"]  = ""
     if "usuario_actual"   not in st.session_state:
         st.session_state["usuario_actual"]   = "Ingeniero"
+    if "usuario_id"        not in st.session_state:
+        st.session_state["usuario_id"]       = None
+    if "usuario_username"  not in st.session_state:
+        st.session_state["usuario_username"] = ""
+    if "usuario_rol"       not in st.session_state:
+        st.session_state["usuario_rol"]      = "INGENIERO"
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
     if "_modo_prueba" not in st.session_state:
@@ -1354,6 +1434,14 @@ def main() -> None:
         # Si arranca en modo prueba por env var, aplicar mocks inmediatamente
         if st.session_state["_modo_prueba"]:
             _aplicar_modo(True)
+
+    # ── Migrar BD de usuarios ANTES del login (Problema 4) ────────────────
+    if "_usuarios_db_ok" not in st.session_state:
+        from usuarios import migrar_bd_usuarios, crear_usuario_inicial
+        ok = migrar_bd_usuarios()
+        st.session_state["_usuarios_db_ok"] = ok
+        if ok:
+            crear_usuario_inicial()   # siembra admin desde secrets.toml
 
     # ── Guard de autenticación ────────────────────────────────────────────
     if not check_password():
@@ -1373,6 +1461,9 @@ def main() -> None:
         else:
             # Fase 5: migrar tablas nuevas en caliente (idempotente)
             migrar_bd_fase5()
+            # Fase 6: migrar tablas INEGI/CONAGUA (idempotente)
+            migrar_bd_inegi()
+            migrar_bd_conagua()
 
     # ── Mostrar error de BD si ocurrió en recarga posterior ───────────────
     if not st.session_state.get("_db_ok", True):
@@ -1435,6 +1526,15 @@ def main() -> None:
         # H5b — Tabla maestra de todos los proyectos
         render_gestor_proyectos(
             usuario_actual = st.session_state.get("usuario_actual", "Ingeniero"),
+        )
+    elif "Administrar Usuarios" in herramienta:
+        # Problema 4 — Panel de administración multi-usuario (solo ADMIN)
+        from usuarios import render_panel_usuarios
+        render_panel_usuarios()
+    elif "Acuíferos CONAGUA" in herramienta:
+        # Fase 6 — Panel de referencia de acuíferos CONAGUA
+        render_panel_conagua(
+            usuario_rol=st.session_state.get("usuario_rol", "INGENIERO")
         )
 
 

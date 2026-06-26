@@ -403,7 +403,6 @@ TABLA DETALLADA DE MUESTRAS:
         msg = client.messages.create(
             model=model_id,
             max_tokens=8192,
-            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_DISPERSION,
             messages=[{
                 "role": "user",
@@ -435,16 +434,62 @@ def generar_capitulo5_claude(
     stats:     dict,
     contexto:  dict,
     analisis:  dict,
+    datos_inegi:   dict | None = None,
+    datos_conagua: dict | None = None,
 ) -> str:
     """
     Genera el texto completo del Capítulo 5 usando los datos reales
-    del proyecto y el análisis de dispersión ya elaborado.
+    del proyecto, el análisis de dispersión ya elaborado, y datos
+    verificados de INEGI/CONAGUA cuando estén disponibles.
+
+    Args:
+        datos_inegi:   Salida de inegi_api.obtener_indicadores_municipio()
+        datos_conagua: Salida de conagua_ref.buscar_acuifero_cercano()
 
     Returns:
         String con el texto del capítulo formateado en Markdown.
     """
-    # Serializar el análisis de dispersión para el prompt
     analisis_txt = json.dumps(analisis, ensure_ascii=False, indent=2)[:3000]
+
+    # ── Bloque INEGI (real o no disponible) ──────────────────────────────
+    if datos_inegi and datos_inegi.get("origen") not in ("no_disponible", None):
+        inegi_txt = f"""
+DATOS INEGI VERIFICADOS (Censo 2020 — usar literalmente en sección 5.9):
+  Clave geoestadística: {datos_inegi.get('clave_entidad','')}{datos_inegi.get('clave_municipio','')}
+  Población total:      {datos_inegi.get('poblacion_total', 'No disponible')} habitantes
+  Viviendas habitadas:  {datos_inegi.get('viviendas_total', 'No disponible')}
+  PEA:                  {datos_inegi.get('pea', 'No disponible')} personas
+  Grado escolar prom.:  {datos_inegi.get('grado_escolar', 'No disponible')} años
+  Origen del dato:      {datos_inegi.get('origen','—')} (fuente verificada)
+  INSTRUCCIÓN: Cita estos números exactos en la sección 5.9. No los redondees
+  ni los sustituyas con estimaciones propias."""
+    else:
+        nota = (datos_inegi or {}).get("nota", "No se pudo consultar INEGI.")
+        inegi_txt = f"""
+DATOS INEGI: No disponibles en este momento ({nota}).
+  INSTRUCCIÓN: Redacta la sección 5.9 con datos referenciales del municipio
+  de {contexto.get('municipio','—')}, {contexto.get('estado','—')},
+  indicando que los datos exactos se verificarán con INEGI Censo 2020."""
+
+    # ── Bloque CONAGUA (real o no disponible) ────────────────────────────
+    if datos_conagua:
+        conagua_txt = f"""
+DATOS CONAGUA VERIFICADOS (tabla referencia DOF — usar literalmente en sección 5.3):
+  Acuífero:             {datos_conagua.get('nombre','—')} (clave {datos_conagua.get('clave','—')})
+  Cuenca hidrológica:   {datos_conagua.get('cuenca','—')}
+  Subcuenca:            {datos_conagua.get('subcuenca','—')}
+  Precipitación media:  {datos_conagua.get('precip_mm','—')} mm/año
+  Condición:            {datos_conagua.get('condicion','—')}
+  Distancia al sitio:   {datos_conagua.get('distancia_km','—')} km
+  Fuente:               {datos_conagua.get('fuente','DOF/CONAGUA')}
+  INSTRUCCIÓN: Cita el nombre y clave del acuífero literalmente. No inventes
+  otros cuerpos de agua subterráneos que no estén en estos datos."""
+    else:
+        conagua_txt = f"""
+DATOS CONAGUA: No hay acuífero registrado para esta zona en la tabla de referencia.
+  INSTRUCCIÓN: En la sección 5.3 menciona la región hidrológica general del
+  estado de {contexto.get('estado','—')} sin especificar nombre ni clave de
+  acuífero (para evitar datos incorrectos)."""
 
     payload = f"""
 DATOS DEL PROYECTO (usar en el capítulo):
@@ -467,6 +512,8 @@ DATOS ANALÍTICOS CLAVE (integrar en secciones pertinentes):
   pH promedio del suelo:    {stats.get('ph_promedio', 0):.2f}
   Humedad promedio:         {stats.get('humedad_promedio_pct', 0):.1f}%
   Extensión lateral pluma:  {stats.get('pluma_ancho_m', 0):.1f} m (E-O) × {stats.get('pluma_largo_m', 0):.1f} m (N-S)
+{inegi_txt}
+{conagua_txt}
 
 ANÁLISIS DE DISPERSIÓN PREVIO (usar en secciones de Hidrografía y Edafología):
 {analisis_txt}
@@ -476,7 +523,6 @@ ANÁLISIS DE DISPERSIÓN PREVIO (usar en secciones de Hidrografía y Edafología
         msg = client.messages.create(
             model=model_id,
             max_tokens=16000,
-            extra_headers={"anthropic-beta": "max-tokens-2024-07-17"},
             system=SYSTEM_PROMPT_CAPITULO5,
             messages=[{
                 "role": "user",
@@ -743,7 +789,68 @@ def render_herramienta_dispersion(
             st.error("No se pudieron calcular estadísticas. Verifica los datos de laboratorio.")
             return
 
-        # Paso 2: Análisis de dispersión con Claude
+        # Paso 2: Consultar INEGI (datos verificados de población)
+        datos_inegi = None
+        municipio_ctx = contexto.get("municipio", "")
+        estado_ctx    = contexto.get("estado", "")
+        if municipio_ctx and estado_ctx:
+            with st.spinner(f"Consultando INEGI — {municipio_ctx}, {estado_ctx}…"):
+                try:
+                    from inegi_api import obtener_indicadores_municipio
+                    datos_inegi = obtener_indicadores_municipio(
+                        estado_ctx, municipio_ctx
+                    )
+                    if datos_inegi:
+                        origen = datos_inegi.get("origen", "—")
+                        if origen == "api":
+                            st.success(
+                                f"✅ INEGI: Población "
+                                f"{datos_inegi.get('poblacion_total','—')} hab. "
+                                f"(API en vivo)"
+                            )
+                        elif origen == "cache":
+                            st.info("💾 INEGI: datos desde cache local.")
+                        else:
+                            st.warning(
+                                f"⚠️ INEGI parcial: {datos_inegi.get('nota','—')}"
+                            )
+                except Exception as exc_inegi:
+                    st.warning(f"⚠️ INEGI no disponible: {exc_inegi}")
+
+        # Paso 3: Consultar CONAGUA (acuífero más cercano)
+        datos_conagua = None
+        cx = stats.get("muestra_max_x", 0)
+        cy = stats.get("muestra_max_y", 0)
+        if cx and cy:
+            with st.spinner("Buscando acuífero en tabla de referencia CONAGUA…"):
+                try:
+                    from conagua_ref import buscar_acuifero_cercano, buscar_acuifero_por_estado
+                    # Convertir UTM → lat/lon aproximado para búsqueda
+                    # (las coordenadas del proyecto son UTM 15Q)
+                    # Para SLP zona 14/15Q: lat ≈ (Y - 2_100_000) / 111_000
+                    #                       lon ≈ -105 + (X - 500_000) / 91_000
+                    lat_aprox = (cy - 2_100_000) / 111_000
+                    lon_aprox = -105.0 + (cx - 500_000) / 91_000
+                    datos_conagua = buscar_acuifero_cercano(
+                        lat_aprox, lon_aprox, estado_filtro=estado_ctx
+                    )
+                    if not datos_conagua and estado_ctx:
+                        datos_conagua = buscar_acuifero_por_estado(estado_ctx)
+                    if datos_conagua:
+                        dist = datos_conagua.get("distancia_km", "—")
+                        st.success(
+                            f"✅ CONAGUA: {datos_conagua['nombre']} "
+                            f"(clave {datos_conagua['clave']}) · {dist} km"
+                        )
+                    else:
+                        st.warning(
+                            "⚠️ CONAGUA: sin acuífero en tabla de referencia "
+                            "para esta zona. Agrega datos en 💧 Panel CONAGUA."
+                        )
+                except Exception as exc_conagua:
+                    st.warning(f"⚠️ CONAGUA no disponible: {exc_conagua}")
+
+        # Paso 4: Análisis de dispersión con Claude
         with st.spinner("Claude analizando la dispersión del contaminante… (30-60 seg)"):
             analisis = analizar_dispersion_claude(client, model_id, stats, contexto)
 
@@ -751,15 +858,21 @@ def render_herramienta_dispersion(
             st.error("No se pudo generar el análisis de dispersión.")
             return
 
-        # Paso 3: Generar Capítulo 5
-        with st.spinner("Redactando Capítulo 5 con datos reales del proyecto… (30-60 seg)"):
-            cap5 = generar_capitulo5_claude(client, model_id, stats, contexto, analisis)
+        # Paso 5: Generar Capítulo 5 — ahora con datos INEGI/CONAGUA reales
+        with st.spinner("Redactando Capítulo 5 con datos verificados… (30-60 seg)"):
+            cap5 = generar_capitulo5_claude(
+                client, model_id, stats, contexto, analisis,
+                datos_inegi   = datos_inegi,
+                datos_conagua = datos_conagua,
+            )
 
         # Guardar en session_state para persistir entre reruns
         st.session_state["_dispersion_stats"]    = stats
         st.session_state["_dispersion_analisis"] = analisis
         st.session_state["_dispersion_cap5"]     = cap5
         st.session_state["_dispersion_proyecto"] = proyecto_actual
+        st.session_state["_dispersion_inegi"]    = datos_inegi
+        st.session_state["_dispersion_conagua"]  = datos_conagua
 
         # Registrar evento en historial del proyecto (Fase 5)
         try:
@@ -770,19 +883,23 @@ def render_herramienta_dispersion(
                 "DISPERSION",
                 f"Análisis de dispersión generado — patrón {patron} · "
                 f"HFL máx {stats.get('hfl_maximo', 0):.2f} mg/kg · "
-                f"{stats.get('muestras_rebase', 0)} muestras fuera de norma",
+                f"{stats.get('muestras_rebase', 0)} muestras fuera de norma · "
+                f"INEGI: {'✅' if datos_inegi else '—'} · "
+                f"CONAGUA: {'✅' if datos_conagua else '—'}",
                 st.session_state.get("usuario_actual", "Ingeniero"),
                 {
-                    "hfl_maximo":      stats.get("hfl_maximo", 0),
-                    "muestras_rebase": stats.get("muestras_rebase", 0),
-                    "patron":          patron,
-                    "municipio":       contexto.get("municipio", ""),
+                    "hfl_maximo":        stats.get("hfl_maximo", 0),
+                    "muestras_rebase":   stats.get("muestras_rebase", 0),
+                    "patron":            patron,
+                    "municipio":         contexto.get("municipio", ""),
+                    "inegi_disponible":  datos_inegi is not None,
+                    "conagua_disponible":datos_conagua is not None,
                 },
             )
         except Exception:
             pass   # El historial nunca rompe el flujo principal
 
-        st.success("✅ Análisis completado. Revisa los resultados en los tabs.")
+        st.success("✅ Análisis completado con datos INEGI/CONAGUA. Revisa los tabs.")
         st.rerun()
 
     # ── Mostrar resultados guardados ───────────────────────────────────────
@@ -790,13 +907,16 @@ def render_herramienta_dispersion(
         st.session_state.get("_dispersion_proyecto") == proyecto_actual
         and st.session_state.get("_dispersion_analisis")
     ):
-        stats   = st.session_state["_dispersion_stats"]
-        analisis= st.session_state["_dispersion_analisis"]
-        cap5    = st.session_state.get("_dispersion_cap5", "")
+        stats    = st.session_state["_dispersion_stats"]
+        analisis = st.session_state["_dispersion_analisis"]
+        cap5     = st.session_state.get("_dispersion_cap5", "")
+        datos_inegi   = st.session_state.get("_dispersion_inegi")
+        datos_conagua = st.session_state.get("_dispersion_conagua")
 
-        tab_disp, tab_cap5, tab_raw = st.tabs([
+        tab_disp, tab_cap5, tab_word, tab_raw = st.tabs([
             "🌊 Análisis de Dispersión",
             "📝 Capítulo 5",
+            "📄 Exportar Word",
             "🔩 Datos crudos (JSON)",
         ])
 
@@ -805,6 +925,35 @@ def render_herramienta_dispersion(
 
         with tab_cap5:
             _render_capitulo5(cap5, proyecto_actual)
+
+        with tab_word:
+            # Recuperar datos del proyecto para la portada del Word
+            det = detalles_proyecto or {}
+            try:
+                from exportador_word import render_descarga_word
+                from app import NOM_138_MATRIZ   # LMP según uso de suelo activo
+                uso_suelo_activo = det.get("uso_de_suelo", "Agrícola/Forestal")
+                lim_vigentes     = NOM_138_MATRIZ.get(uso_suelo_activo, {})
+            except Exception:
+                lim_vigentes = {
+                    "HFL": 200.0, "Benceno": 6.0, "Tolueno": 40.0,
+                    "Etilbenceno": 10.0, "Xilenos": 40.0,
+                }
+                uso_suelo_activo = det.get("uso_de_suelo", "Agrícola/Forestal")
+
+            render_descarga_word(
+                texto_cap5        = cap5,
+                historial_lab     = historial_lab,
+                lim_vigentes      = lim_vigentes,
+                id_proyecto       = proyecto_actual,
+                nombre_siniestro  = det.get("nombre", proyecto_actual),
+                uso_suelo         = uso_suelo_activo,
+                municipio         = contexto.get("municipio", ""),
+                estado            = contexto.get("estado", ""),
+                responsable       = det.get("responsable", ""),
+                datos_inegi       = datos_inegi,
+                datos_conagua     = datos_conagua,
+            )
 
         with tab_raw:
             st.caption("Datos de estadísticas calculadas y análisis JSON completo.")
