@@ -50,20 +50,17 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # PALETA DE MARCA ZUBALE
 # ---------------------------------------------------------------------------
-# Ajusta estos hex si tu manual de marca define tonos distintos; todo el
+# Tomados directamente del logo oficial de Zubale (azul vibrante sobre navy/blanco).
+# Ajusta estos hex si tu manual de marca define tonos adicionales; todo el
 # dashboard (CSS + gráficos) se alimenta únicamente de estas constantes.
-MAGENTA = "#EC0868"
-MAGENTA_LIGHT = "#FF5CA8"
-NAVY = "#0B1F3A"
-NAVY_SOFT = "#1E3358"
+BLUE = "#0043FC"        # azul Zubale — acento primario / positivo (on-time)
+NAVY = "#071633"        # navy profundo — contraste / negativo (retraso)
+BLUE_DARK = "#0A2A7A"   # paso intermedio navy→azul, usado en el degradado del header
 BG = "#F4F5F9"
 CARD = "#FFFFFF"
 TEXT = "#101828"
 MUTED = "#6B7280"
 BORDER = "#E7E9F0"
-
-# Escala continua navy → magenta para gráficos multi-categoría (por marca)
-BRAND_COLORWAY = [NAVY, "#5A3A6E", "#9A2E86", MAGENTA, MAGENTA_LIGHT, "#2E5B8A", "#6E4A8A", "#C43B9C"]
 
 CSS = f"""
 <style>
@@ -72,7 +69,7 @@ CSS = f"""
 
     /* Encabezado */
     .zb-header {{
-        background: linear-gradient(120deg, {NAVY} 0%, {NAVY_SOFT} 100%);
+        background: linear-gradient(120deg, {NAVY} 0%, {BLUE_DARK} 100%);
         border-radius: 16px;
         padding: 28px 32px;
         margin-bottom: 24px;
@@ -88,7 +85,7 @@ CSS = f"""
         color: #C9D2E3; font-size: 0.9rem; margin: 4px 0 0 0;
     }}
     .zb-badge {{
-        background: {MAGENTA};
+        background: {BLUE};
         color: white;
         padding: 6px 16px;
         border-radius: 999px;
@@ -116,7 +113,7 @@ CSS = f"""
     .zb-kpi-delta {{
         font-size: 0.82rem; font-weight: 600; margin-top: 6px; display: inline-block;
     }}
-    .zb-kpi-accent {{ border-top: 4px solid {MAGENTA}; }}
+    .zb-kpi-accent {{ border-top: 4px solid {BLUE}; }}
     .zb-kpi-accent-navy {{ border-top: 4px solid {NAVY}; }}
 
     /* Contenedores de gráficos */
@@ -385,7 +382,7 @@ with col_izq:
                 labels=["On-time", "Con retraso"],
                 values=[df["is_ontime"].sum(), (~df["is_ontime"]).sum()],
                 hole=0.62,
-                marker=dict(colors=[MAGENTA, NAVY]),
+                marker=dict(colors=[BLUE, NAVY]),
                 textinfo="percent",
                 textfont=dict(color="white", size=14),
                 sort=False,
@@ -422,7 +419,7 @@ with col_der:
             x=resumen_marca["ontime_pct"],
             y=resumen_marca["brand"],
             orientation="h",
-            marker=dict(color=MAGENTA),
+            marker=dict(color=BLUE),
             text=[f"{v:.1f}%" for v in resumen_marca["ontime_pct"]],
             textposition="outside",
             customdata=resumen_marca["ordenes"],
@@ -472,7 +469,7 @@ fig_trend.add_trace(
         y=tendencia["ontime_pct"],
         name="% On-time",
         mode="lines+markers",
-        line=dict(color=MAGENTA, width=3),
+        line=dict(color=BLUE, width=3),
         marker=dict(size=6),
         yaxis="y2",
         hovertemplate="On-time: %{y:.1f}%<extra></extra>",
