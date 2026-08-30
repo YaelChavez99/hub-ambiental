@@ -104,7 +104,7 @@ st.set_page_config(
 
 # ── Corrección 1: modelo en un solo lugar ──────────────────────────────────
 # Nombre oficial verificado en la API de Anthropic (junio 2026)
-MODEL_ID = "claude-sonnet-4-5"
+MODEL_ID = "claude-sonnet-4-6"
 
 # ── Corrección 2: parámetros Vision ajustados ─────────────────────────────
 # 12 páginas por lote → PDF de 86 págs = 7-8 llamadas (vs 17 con lote=5)
@@ -122,12 +122,12 @@ NOM_138_MATRIZ: dict[str, dict[str, float]] = {
         "Etilbenceno": 10.0, "Xilenos": 40.0,
     },
     "Residencial": {
-        "HFL": 1200.0, "Benceno": 6.0,  "Tolueno": 40.0,
-        "Etilbenceno": 10.0, "Xilenos": 40.0,
+        "HFL": 500.0,  "Benceno": 6.0,  "Tolueno": 40.0,
+        "Etilbenceno": 40.0, "Xilenos": 200.0,
     },
     "Industrial": {
-        "HFL": 3000.0, "Benceno": 15.0, "Tolueno": 100.0,
-        "Etilbenceno": 50.0, "Xilenos": 200.0,
+        "HFL": 1000.0, "Benceno": 6.0,  "Tolueno": 40.0,
+        "Etilbenceno": 40.0, "Xilenos": 200.0,
     },
 }
 
