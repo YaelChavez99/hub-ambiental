@@ -252,11 +252,19 @@ def _parsear_hechos(raw: str) -> list[dict]:
 
 def _extraer_hechos_chunk(
     client: anthropic.Anthropic, model_id: str, chunk: dict
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """
     Envía un único chunk a Claude para extracción de hechos.
     Salida acotada (MAX_TOKENS_EXTRACCION) porque solo pide datos, no prosa.
     Cada hecho devuelto se enriquece con la ubicación del chunk de origen.
+
+    Returns:
+        (hechos, exito). exito=False significa que la llamada a Claude
+        falló (error de API, timeout, red) — NO es lo mismo que "esta
+        página no tenía datos relevantes" (eso también da hechos=[] pero
+        exito=True). Sin esta distinción, un fragmento que falla por un
+        problema de red es indistinguible de una página en blanco — el
+        riesgo exacto de "perder páginas sin darse cuenta".
     """
     try:
         msg = client.messages.create(
@@ -273,17 +281,18 @@ def _extraer_hechos_chunk(
             }],
         )
         hechos = _parsear_hechos(msg.content[0].text.strip())
+        exito = True
     except anthropic.APIStatusError:
-        hechos = []
+        hechos, exito = [], False
     except Exception:
-        hechos = []
+        hechos, exito = [], False
 
     for h in hechos:
         h["chunk_id"] = chunk["chunk_id"]
         h["pagina_inicio"] = chunk["pagina_inicio"]
         h["pagina_fin"] = chunk["pagina_fin"]
         h["seccion_titulo"] = chunk["seccion_titulo"]
-    return hechos
+    return hechos, exito
 
 
 def extraer_hechos_documento(
@@ -292,6 +301,7 @@ def extraer_hechos_documento(
     chunks: list[dict],
     max_workers: int = MAX_WORKERS_EXTRACCION,
     mostrar_progreso: bool = True,
+    stats_out: dict | None = None,
 ) -> list[dict]:
     """
     Ejecuta Pass 1 sobre todos los chunks del documento en paralelo.
@@ -299,14 +309,24 @@ def extraer_hechos_documento(
     los módulos de auditoría trabajan sobre esta salida estructurada, no
     sobre el texto crudo.
 
+    Args:
+        stats_out: si se pasa un dict, se llena in-place con
+            {"chunks_totales", "chunks_fallidos", "detalle_chunks_fallidos",
+             "hechos_totales_extraidos"} — la señal para detectar cobertura
+            perdida por fallo de API, no solo por diseño de segmentación.
+
     Returns:
         Lista de hechos extraídos, cada uno con entidad/valor/cita_textual
         y su ubicación exacta (chunk_id, pagina_inicio, pagina_fin, seccion_titulo).
     """
     if not chunks:
+        if stats_out is not None:
+            stats_out.update(chunks_totales=0, chunks_fallidos=0,
+                              detalle_chunks_fallidos=[], hechos_totales_extraidos=0)
         return []
 
     todos_los_hechos: list[dict] = []
+    chunks_fallidos: list[dict] = []
     progreso = st.progress(0, text=f"Extrayendo datos… 0/{len(chunks)} fragmentos") \
         if mostrar_progreso else None
 
@@ -317,13 +337,37 @@ def extraer_hechos_documento(
         }
         completados = 0
         for futuro in concurrent.futures.as_completed(futuros):
-            todos_los_hechos.extend(futuro.result())
+            chunk_origen = futuros[futuro]
+            hechos_chunk, exito = futuro.result()
+            todos_los_hechos.extend(hechos_chunk)
+            if not exito:
+                chunks_fallidos.append({
+                    "chunk_id": chunk_origen["chunk_id"],
+                    "pagina_inicio": chunk_origen["pagina_inicio"],
+                    "pagina_fin": chunk_origen["pagina_fin"],
+                })
             completados += 1
             if progreso is not None:
                 progreso.progress(
                     completados / len(chunks),
                     text=f"Extrayendo datos… {completados}/{len(chunks)} fragmentos",
                 )
+
+    if progreso is not None and chunks_fallidos:
+        rangos_fallidos = [
+            f"{c['pagina_inicio']}-{c['pagina_fin']}" for c in chunks_fallidos
+        ]
+        st.warning(
+            f"⚠️ {len(chunks_fallidos)} de {len(chunks)} fragmento(s) fallaron durante "
+            f"la extracción (páginas: {', '.join(rangos_fallidos)}). "
+            "Esas páginas pueden no estar reflejadas en los hallazgos."
+        )
+
+    if stats_out is not None:
+        stats_out["chunks_totales"] = len(chunks)
+        stats_out["chunks_fallidos"] = len(chunks_fallidos)
+        stats_out["detalle_chunks_fallidos"] = chunks_fallidos
+        stats_out["hechos_totales_extraidos"] = len(todos_los_hechos)
 
     if progreso is not None:
         progreso.empty()

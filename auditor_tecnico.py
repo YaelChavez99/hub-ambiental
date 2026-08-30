@@ -596,7 +596,8 @@ def auditar_informe(client: anthropic.Anthropic, texto: str, model_id: str) -> d
             "entidades": {}, "hallazgos": [], "icti": {"puntaje_total": 0, "nivel": "RECHAZABLE"},
         }
 
-    hechos = _ax.extraer_hechos_documento(client, model_id, chunks)
+    pass1_stats: dict = {}
+    hechos = _ax.extraer_hechos_documento(client, model_id, chunks, stats_out=pass1_stats)
     tabla_hechos = _ax.construir_tabla_hechos(hechos)
     entidades = _construir_entidades_compatibles(tabla_hechos)
 
@@ -625,6 +626,7 @@ def auditar_informe(client: anthropic.Anthropic, texto: str, model_id: str) -> d
         "cobertura_externa":    cobertura_externa,
         "total_paginas":        chunks[-1]["pagina_fin"] if chunks else 0,
         "total_chunks":         len(chunks),
+        "pass1_stats":          pass1_stats,
     }
 
 
