@@ -66,9 +66,10 @@ Para cada dato relevante que encuentres, devuelve un objeto:
 
 Usa estos nombres de entidad cuando apliquen (usa otros solo si el dato no
 encaja en ninguno de estos):
-  volumen_derramado_litros, area_afectada_m2, volumen_suelo_m3,
+  numero_informe, volumen_derramado_litros, area_afectada_m2, volumen_suelo_m3,
   municipio, estado, coordenadas_x, coordenadas_y, km_autopista,
-  nombre_autopista, fecha_siniestro, fecha_muestreo, numero_pozos_muestreo,
+  nombre_autopista, contaminante, fecha_siniestro, fecha_muestreo,
+  numero_pozos_muestreo, tipo_muestreo,
   responsable_tecnico, uso_de_suelo, empresa_vehiculo,
   nombre_acuifero, profundidad_nivel_freatico_m,
   distancia_cuerpo_agua_superficial_m,

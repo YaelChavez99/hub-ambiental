@@ -157,221 +157,181 @@ def auditar_informe(
     model_id: str,
 ) -> dict:
     """
-    MOCK: Devuelve un reporte de auditoría completo simulado.
-    Incluye entidades, discrepancias, vacíos regulatorios,
-    debilidades técnicas e ICTI — todo con datos verosímiles
-    de un informe de derrame en autopista mexicana.
+    MOCK: Devuelve un reporte de auditoría completo simulado, en el mismo
+    esquema que produce el orquestador real (auditor_tecnico.auditar_informe,
+    Fase 3): entidades, hallazgos con categoría/criticidad/página/estado de
+    verificación, e ICTI. El ICTI y el resumen ejecutivo se calculan con las
+    MISMAS funciones deterministas que usa el sistema real (auditor_icti.py),
+    no con valores fijos — así el mock nunca se desincroniza del cálculo real.
     """
     st.info(_AVISO)
     time.sleep(_SLEEP)
 
-    return {
-        # ── Entidades extraídas ──────────────────────────────────────────────
-        "entidades": {
-            "numero_informe":           "OT-126040089",
-            "fecha_siniestro":          "21 de abril de 2026",
-            "fecha_muestreo":           "21 de abril de 2026",
-            "municipio":                "Villa de Arriaga",
-            "estado":                   "San Luis Potosí",
-            "km_autopista":             "Km 75+550",
-            "nombre_autopista":         "Autopista Lagos de Moreno – San Luis Potosí",
-            "volumen_derramado_litros": "32,077 litros",
-            "contaminante":             "Gasolina (hidrocarburo fracción ligera)",
-            "coordenadas_siniestro":    "X: 250,037 / Y: 2,420,516 (UTM 15Q)",
-            "area_afectada_m2":         "310 m²",
-            "volumen_suelo_m3":         "46.5 m³",
-            "numero_pozos_muestreo":    "17 pozos (38 muestras + 4 duplicados)",
-            "empresa_vehiculo":         "Transportes del Norte S.A. de C.V.",
-            "responsable_tecnico":      "Biol. Juan Carlos Vargas Mellado",
-            "uso_de_suelo":             "Agrícola, forestal, pecuario y de conservación",
-            "tipo_muestreo":            "Inicial / Comprobatorio",
-        },
+    import auditor_icti as _icti
+    import auditor_tecnico as _at
+    import nom138_referencias as _nom
 
-        # ── Discrepancias detectadas ─────────────────────────────────────────
-        "discrepancias": [
-            {
-                "entidad":           "volumen_derramado_litros",
-                "valor_referencia":  "32,077 litros (Antecedentes, pág. 3)",
-                "valor_discrepante": "32,000 litros (Conclusiones, pág. 47)",
-                "seccion_referencia":"Capítulo 2 — Antecedentes",
-                "seccion_error":     "Capítulo 7 — Conclusiones",
-                "gravedad":          "ALTA",
-                "recomendacion":     (
-                    "Unificar el volumen derramado a 32,077 litros en todo el documento. "
-                    "La cifra de Antecedentes proviene de la bitácora oficial del siniestro."
-                ),
-            },
-            {
-                "entidad":           "area_afectada_m2",
-                "valor_referencia":  "310 m² (Caracterización, pág. 12)",
-                "valor_discrepante": "350 m² (Plan de Saneamiento, pág. 55)",
-                "seccion_referencia":"Capítulo 3 — Caracterización del Sitio",
-                "seccion_error":     "Capítulo 8 — Plan de Saneamiento",
-                "gravedad":          "ALTA",
-                "recomendacion":     (
-                    "Revisar el cálculo del polígono afectado. Usar el valor "
-                    "georreferenciado de 310 m² como referencia oficial."
-                ),
-            },
-            {
-                "entidad":           "numero_pozos_muestreo",
-                "valor_referencia":  "17 pozos (Plan de Muestreo, pág. 8)",
-                "valor_discrepante": "15 pozos (Resumen Ejecutivo, pág. 2)",
-                "seccion_referencia":"Capítulo 2 — Plan de Muestreo",
-                "seccion_error":     "Resumen Ejecutivo",
-                "gravedad":          "MEDIA",
-                "recomendacion":     (
-                    "Corregir el Resumen Ejecutivo: se muestrearon 17 pozos "
-                    "(P1 a P17), no 15. Verificar que la tabla resumen coincida."
-                ),
-            },
-        ],
+    entidades = {
+        "numero_informe":           "OT-126040089",
+        "fecha_siniestro":          "21 de abril de 2026",
+        "fecha_muestreo":           "21 de abril de 2026",
+        "municipio":                "Villa de Arriaga",
+        "estado":                   "San Luis Potosí",
+        "km_autopista":             "Km 75+550",
+        "nombre_autopista":         "Autopista Lagos de Moreno – San Luis Potosí",
+        "volumen_derramado_litros": "32,077 litros",
+        "contaminante":             "Gasolina (hidrocarburo fracción ligera)",
+        "coordenadas_siniestro":    "X: 250,037 / Y: 2,420,516 (UTM 15Q)",
+        "area_afectada_m2":         "310 m²",
+        "volumen_suelo_m3":         "46.5 m³",
+        "numero_pozos_muestreo":    "17 pozos (38 muestras + 4 duplicados)",
+        "empresa_vehiculo":         "Transportes del Norte S.A. de C.V.",
+        "responsable_tecnico":      "Biol. Juan Carlos Vargas Mellado",
+        "uso_de_suelo":             "Agrícola, forestal, pecuario y de conservación",
+        "tipo_muestreo":            "Inicial / Comprobatorio",
+    }
 
-        # ── Vacíos regulatorios ──────────────────────────────────────────────
-        "vacios_regulatorios": [
-            {
-                "seccion_afectada":     "Capítulo 4 — Metodología de Muestreo",
-                "informacion_faltante": (
-                    "No se especifica el método de preservación de muestras "
-                    "durante el transporte (temperatura, contenedor)."
-                ),
-                "autoridad":   "ASEA",
-                "criticidad":  "BLOQUEANTE",
-                "recomendacion": (
-                    "Agregar párrafo indicando: 'Las muestras fueron preservadas a "
-                    "4°C ± 2°C en contenedor de vidrio ámbar, sin conservador, "
-                    "conforme al método LBS-MTA-018 de NOVALABSA.'"
-                ),
-            },
-            {
-                "seccion_afectada":     "Capítulo 6 — Evaluación de Riesgos",
-                "informacion_faltante": (
-                    "Falta evaluación de riesgo a receptores humanos "
-                    "y ecosistémicos conforme al Apéndice Normativo D de la NOM-138."
-                ),
-                "autoridad":   "SEMARNAT",
-                "criticidad":  "BLOQUEANTE",
-                "recomendacion": (
-                    "Desarrollar la evaluación de riesgo con los escenarios "
-                    "de exposición para trabajadores agrícolas y fauna silvestre "
-                    "de la región semiárida de SLP."
-                ),
-            },
-            {
-                "seccion_afectada":     "Anexos",
-                "informacion_faltante": (
-                    "No se incluye el certificado de acreditación vigente "
-                    "del laboratorio ante la EMA."
-                ),
-                "autoridad":   "PROFEPA",
-                "criticidad":  "IMPORTANTE",
-                "recomendacion": (
-                    "Adjuntar como Anexo VII el certificado de acreditación "
-                    "No. R-0549-029/14 de NOVALABSA vigente a la fecha del muestreo."
-                ),
-            },
-            {
-                "seccion_afectada":     "Capítulo 5 — Características del Sitio",
-                "informacion_faltante": (
-                    "Las coordenadas del polígono del sitio no están referenciadas "
-                    "al datum WGS84 — solo se indica UTM sin especificar el datum."
-                ),
-                "autoridad":   "SEMARNAT",
-                "criticidad":  "IMPORTANTE",
-                "recomendacion": (
-                    "Agregar datum: 'Coordenadas en sistema UTM, Zona 14Q, "
-                    "Datum WGS84' en el encabezado de todas las tablas de coordenadas."
-                ),
-            },
-            {
-                "seccion_afectada":     "Capítulo 7 — Conclusiones",
-                "informacion_faltante": (
-                    "Las conclusiones no mencionan explícitamente el "
-                    "cumplimiento o incumplimiento de cada parámetro de la NOM-138."
-                ),
-                "autoridad":   "ASEA",
-                "criticidad":  "MENOR",
-                "recomendacion": (
-                    "Agregar tabla resumen de cumplimiento NOM-138 por parámetro "
-                    "y por zona en el capítulo de conclusiones."
-                ),
-            },
-        ],
-
-        # ── Debilidades técnicas ─────────────────────────────────────────────
-        "debilidades_tecnicas": [
-            {
-                "seccion":     "Capítulo 3 — Caracterización del Sitio",
-                "tipo":        "INSUFICIENTE",
-                "descripcion": (
-                    "La descripción de la litología del sitio es genérica. "
-                    "Solo indica 'suelo arenoso-limoso' sin describir la "
-                    "permeabilidad ni el perfil estratigráfico observado en campo."
-                ),
-                "sugerencia": (
-                    "Agregar descripción estratigráfica por pozo indicando: "
-                    "color, textura, consistencia y presencia de olor a HC "
-                    "por profundidad, basada en los formatos de campo."
-                ),
-            },
-            {
-                "seccion":     "Capítulo 4 — Interpretación de Resultados",
-                "tipo":        "AMBIGUO",
-                "descripcion": (
-                    "El párrafo de interpretación indica que 'varios puntos "
-                    "superaron los LMP' sin identificar cuáles ni en qué magnitud. "
-                    "Esto impide que la autoridad evalúe la extensión real."
-                ),
-                "sugerencia": (
-                    "Reemplazar con: tabla de excedencias específica "
-                    "indicando muestra, parámetro, valor obtenido, LMP y "
-                    "factor de excedencia (valor/LMP)."
-                ),
-            },
-            {
-                "seccion":     "Capítulo 6 — Evaluación de Riesgos",
-                "tipo":        "INCOMPLETO",
-                "descripcion": (
-                    "La sección de evaluación de riesgos tiene 2 párrafos "
-                    "que no desarrollan ninguno de los 4 pasos del proceso "
-                    "de evaluación (identificación, evaluación de exposición, "
-                    "toxicológica, riesgo)."
-                ),
-                "sugerencia": (
-                    "Desarrollar evaluación conforme al Apéndice Normativo D "
-                    "de la NOM-138: identificar contaminantes de preocupación, "
-                    "rutas de exposición y calcular cocientes de peligro (HQ)."
-                ),
-            },
-            {
-                "seccion":     "Capítulo 8 — Recomendaciones",
-                "tipo":        "INSUFICIENTE",
-                "descripcion": (
-                    "Las recomendaciones son genéricas ('se recomienda remediar "
-                    "el sitio') sin proponer tecnología, volumen ni cronograma."
-                ),
-                "sugerencia": (
-                    "Especificar: tecnología propuesta (excavación y disposición, "
-                    "bioremediación, etc.), volumen estimado de suelo a tratar, "
-                    "y cronograma tentativo de actividades."
-                ),
-            },
-        ],
-
-        # ── ICTI — Índice de Calidad Técnica ────────────────────────────────
-        "icti": {
-            "puntaje_total":           58,
-            "consistencia_datos":      15,   # -5 ALTA, -5 ALTA, -3 MEDIA → 25-13=12... ajust 15
-            "completitud_regulatoria": 13,   # -10 BLOQ, -10 BLOQ, -5 IMP, -5 IMP → 30-30=0... ajust 13
-            "solidez_tecnica":         20,   # 4 secciones a ~3.5/5 prom → 70% de 30 = 21, ajust 20
-            "formato_presentacion":    10,   # buena estructura pero datum faltante → 10/15
-            "nivel":                   "DEFICIENTE",
-            "comentario_ejecutivo":    (
-                "El informe presenta datos técnicos sólidos en laboratorio "
-                "pero tiene 2 discrepancias críticas en volumen/área y 2 vacíos "
-                "bloqueantes ante ASEA/SEMARNAT. Requiere revisión antes de presentar."
+    hallazgos = [
+        # ── Consistencia de datos (antes "discrepancias") ────────────────────
+        {
+            "categoria": "consistencia_datos", "criticidad": "ALTO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": (
+                "El dato 'volumen_derramado_litros' aparece con valores distintos: "
+                "'32,077 litros' (pág. 3, Antecedentes) vs. '32,000 litros' (pág. 47, Conclusiones)."
             ),
+            "pagina": 47, "pagina_referencia": 3,
+            "cita_textual": "32,000 litros", "cita_referencia": "32,077 litros",
+            "cita_normativa": None, "autoridad": None,
         },
+        {
+            "categoria": "consistencia_datos", "criticidad": "ALTO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": (
+                "El dato 'area_afectada_m2' aparece con valores distintos: "
+                "'310 m²' (pág. 12, Caracterización) vs. '350 m²' (pág. 55, Plan de Saneamiento)."
+            ),
+            "pagina": 55, "pagina_referencia": 12,
+            "cita_textual": "350 m²", "cita_referencia": "310 m²",
+            "cita_normativa": None, "autoridad": None,
+        },
+        {
+            "categoria": "consistencia_datos", "criticidad": "ALTO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": (
+                "El dato 'numero_pozos_muestreo' aparece con valores distintos: "
+                "'17 pozos' (pág. 8, Plan de Muestreo) vs. '15 pozos' (pág. 2, Resumen Ejecutivo)."
+            ),
+            "pagina": 2, "pagina_referencia": 8,
+            "cita_textual": "15 pozos", "cita_referencia": "17 pozos",
+            "cita_normativa": None, "autoridad": None,
+        },
+
+        # ── Completitud regulatoria (antes "vacíos regulatorios") ────────────
+        {
+            "categoria": "completitud_regulatoria", "criticidad": "ALTO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": (
+                "No se especifica el método de preservación de muestras durante "
+                "el transporte (temperatura, tipo de contenedor)."
+            ),
+            "pagina": 34, "cita_textual": "",
+            "cita_normativa": _nom.resolver_cita("metodologia_muestreo"), "autoridad": "ASEA",
+        },
+        {
+            "categoria": "completitud_regulatoria", "criticidad": "CRITICO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": (
+                "Falta evaluación de riesgo a receptores humanos y ecosistémicos "
+                "desarrollada conforme a la NOM-138 — solo se menciona, no se desarrolla."
+            ),
+            "pagina": 88, "cita_textual": "",
+            "cita_normativa": _nom.resolver_cita("evaluacion_riesgos"), "autoridad": "SEMARNAT",
+        },
+        {
+            "categoria": "completitud_regulatoria", "criticidad": "MEDIO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "No se incluye el certificado de acreditación vigente del laboratorio ante la EMA.",
+            "pagina": None, "cita_textual": "",
+            "cita_normativa": _nom.CITA_GENERICA, "autoridad": "PROFEPA",
+        },
+        {
+            "categoria": "completitud_regulatoria", "criticidad": "MEDIO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "Las coordenadas del polígono no están referenciadas a un datum geodésico explícito.",
+            "pagina": 12, "cita_textual": "",
+            "cita_normativa": _nom.CITA_GENERICA, "autoridad": "SEMARNAT",
+        },
+        {
+            "categoria": "completitud_regulatoria", "criticidad": "BAJO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "Las conclusiones no incluyen tabla de cumplimiento NOM-138 por parámetro.",
+            "pagina": 95, "cita_textual": "",
+            "cita_normativa": _nom.resolver_cita("limites_maximos_permisibles"), "autoridad": "ASEA",
+        },
+
+        # ── Solidez técnica (antes "debilidades técnicas") ───────────────────
+        {
+            "categoria": "solidez_tecnica", "criticidad": "MEDIO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "La descripción de litología es genérica, sin detalle por pozo.",
+            "pagina": 40, "cita_textual": "", "cita_normativa": None, "autoridad": None,
+        },
+        {
+            "categoria": "solidez_tecnica", "criticidad": "ALTO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "La interpretación de resultados no identifica qué muestras/parámetros superaron el LMP.",
+            "pagina": 42, "cita_textual": "", "cita_normativa": None, "autoridad": None,
+        },
+        {
+            "categoria": "solidez_tecnica", "criticidad": "CRITICO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "La evaluación de riesgos no desarrolla los 4 pasos del proceso (identificación, exposición, toxicológica, riesgo).",
+            "pagina": 88, "cita_textual": "", "cita_normativa": None, "autoridad": None,
+        },
+        {
+            "categoria": "solidez_tecnica", "criticidad": "MEDIO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "Las recomendaciones no especifican tecnología, volumen ni cronograma de remediación.",
+            "pagina": 97, "cita_textual": "", "cita_normativa": None, "autoridad": None,
+        },
+
+        # ── Coherencia hídrica interna (simulada; en el sistema real se
+        #    deriva de la tabla de hechos en Python, no de un mock) ──────────
+        {
+            "categoria": "solidez_tecnica", "criticidad": "ALTO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "El informe no reporta la profundidad del nivel freático.",
+            "pagina": None, "cita_textual": "", "cita_normativa": _nom.CITA_GENERICA, "autoridad": None,
+        },
+        {
+            "categoria": "solidez_tecnica", "criticidad": "MEDIO",
+            "estado_verificacion": "CONFIRMADO",
+            "descripcion": "El informe trata temas hídricos pero no nombra el acuífero específico.",
+            "pagina": 68, "cita_textual": "", "cita_normativa": _nom.CITA_GENERICA, "autoridad": None,
+        },
+    ]
+
+    # Módulos externos (Fase 4/5) — simulados como no verificables, igual
+    # que en producción hasta que INEGI/CONAGUA se conecten al auditor.
+    cobertura_externa = {
+        "geografica_no_verificable": True,
+        "hidrica_no_verificable":    True,
+    }
+
+    resultado_icti = _icti.calcular_icti(hallazgos, cobertura_externa)
+    resumen_ejecutivo = _at._construir_resumen_ejecutivo(
+        resultado_icti, hallazgos, cobertura_externa, entidades
+    )
+
+    return {
+        "entidades":         entidades,
+        "hallazgos":         hallazgos,
+        "icti":              resultado_icti,
+        "resumen_ejecutivo": resumen_ejecutivo,
+        "cobertura_externa": cobertura_externa,
+        "total_paginas":     98,
+        "total_chunks":      25,
     }
 
 
